@@ -1,0 +1,17 @@
+name: foundationpose
+channels:
+  - conda-forge
+  - nvidia/label/cuda-12.4.1
+dependencies:
+  - python=3.11
+  - pip
+  - cmake
+  - ninja
+  - eigen
+  - boost-cpp
+  - pybind11
+  - gcc_linux-64=12
+  - gxx_linux-64=12
+  - cuda-nvcc=12.4
+  - cuda-cudart-dev=12.4
+  - cuda-cccl=12.4

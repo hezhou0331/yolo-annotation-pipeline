@@ -1,0 +1,56 @@
+# Python / editors
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and generated runtime output
+*.log
+Log/
+logs/
+tmp/
+runs/
+**/_staging/
+**/review/
+
+# Local environments and package caches
+.env
+.env.*
+.venv/
+venv/
+conda-bld/
+.wheelhouse/
+
+# Third-party source trees are restored by scripts/bootstrap_third_party.sh
+third_party/*
+!third_party/README.md
+
+# Local model weights; keep documentation and checksums only
+models/*
+!models/README.md
+!models/checksums.sha256
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+
+# Real project inputs, generated datasets, meshes and reports
+projects/*/data/
+projects/*/datasets/
+projects/*/assets/
+projects/*/reports/
+
+# Restricted/local reference material
+docs/private/*
+!docs/private/README.md
+
+# Training outputs
+wandb/
+mlruns/

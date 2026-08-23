@@ -1,0 +1,140 @@
+# ATEC 2026规则提取后的默认识别配置
+# 来源：ATEC规则260820(1).pdf，第9—20页（2026-08-23人工复核）
+version: 2
+
+assumptions:
+  competition_group: 未确认
+  bonus_enabled: false
+  yolo_task: segmentation
+  bin_label_scope: 未确认（当前类别名保持整桶；控制端可改为桶口ROI或固定坐标）
+  meal_box_label_scope: 暂按“餐盒及可见黑色内容物”作为一个实例，等待实物状态确认
+  note: >-
+    当前默认启用4个核心物品类别和3个可选场景垃圾桶类别。附加宝箱任务仅对多足/多轮组开放，
+    在机器人组别和是否参赛Bonus确认前不写入正式YOLO类别。
+
+classes:
+  0: can
+  1: watermelon_rind
+  2: meal_box
+  3: red_paper_bag
+  4: blue_bin
+  5: green_bin
+  6: red_bin
+
+objects:
+  can:
+    class_id: 0
+    chinese_name: 易拉罐
+    target_bin: blue_bin
+    rule_spec:
+      capacity_ml: 330
+      added_weight_g: 200
+    recommended_annotation: sam2_default_foundationpose_after_metric_mesh
+    foundationpose_fit: good_with_symmetry_risk
+    mesh_required: false
+    notes:
+      - 无CAD首轮默认SAM2，避免环境被建模阻塞。
+      - 有实测直径、高度和米制mesh后可切FoundationPose做对比。
+      - 罐体近似旋转对称，姿态角可能跳变；YOLO分割mask通常仍可用。
+  watermelon_rind:
+    class_id: 1
+    chinese_name: 仿真西瓜皮
+    target_bin: green_bin
+    rule_spec:
+      upper_width_cm: 5
+      lower_width_cm: 6
+      length_cm: 20
+    recommended_annotation: sam2
+    foundationpose_fit: conditional
+    mesh_required: false
+    notes:
+      - 若实物完全刚性且3件形状固定，可为单个实物扫描mesh后试用FoundationPose。
+      - 若存在弯折、软质或不同形态，保持SAM2视频mask传播。
+  meal_box:
+    class_id: 2
+    chinese_name: 餐盒及黑色内容物
+    target_bin: blue_bin
+    rule_spec:
+      material: 环保材质
+      black_contents_weight_g: 100
+    recommended_annotation: sam2
+    foundationpose_fit: risky
+    mesh_required: false
+    label_scope: 餐盒与可见黑色内容物作为同一实例（暂定，待实物确认）
+    notes:
+      - 开合、变形、内容物位移会破坏刚体假设。
+      - 不单独创建black_contents类别；若内容物会掉出或独立移动，必须重新冻结标签规则。
+  red_paper_bag:
+    class_id: 3
+    chinese_name: 红色纸袋
+    target_bin: blue_bin
+    rule_spec:
+      length_cm: 13
+      width_cm: 9.5
+      height_cm: 27
+      material: 纸质
+      added_weight_g: 100
+    recommended_annotation: sam2
+    foundationpose_fit: poor
+    mesh_required: false
+    notes:
+      - 明显可变形，不建议用FoundationPose作为主标注器。
+  blue_bin:
+    class_id: 4
+    chinese_name: 蓝色垃圾桶
+    recommended_annotation: sam2_or_manual_or_calibrated_pose
+    foundationpose_fit: unnecessary
+    rule_spec: &bin_spec
+      opening_length_cm: 40
+      opening_width_cm: 26
+      bottom_length_cm: 32
+      bottom_width_cm: 19.5
+      height_cm: 47
+    notes:
+      - 场景固定时可使用标定坐标；随机器人运动时建议训练桶或桶口区域。
+      - 不必为垃圾桶制作3D模型。
+  green_bin:
+    class_id: 5
+    chinese_name: 绿色垃圾桶
+    recommended_annotation: sam2_or_manual_or_calibrated_pose
+    foundationpose_fit: unnecessary
+    rule_spec: *bin_spec
+  red_bin:
+    class_id: 6
+    chinese_name: 红色垃圾桶
+    recommended_annotation: sam2_or_manual_or_calibrated_pose
+    foundationpose_fit: unnecessary
+    rule_spec: *bin_spec
+
+scene_rules:
+  object_sets_per_match: 3
+  object_classes_per_set: 4
+  total_physical_target_instances: 12
+  same_class_multiple_instances: true
+  counted_instances_per_class_max: 2
+  maximum_scored_placements: 8
+  correct_bin_score_each: 20
+  wrong_bin_score_each: 10
+  general_drop_zone_score_each: 5
+  expected_conditions:
+    - 户外或变化光照
+    - 风和物体姿态变化
+    - 随机位置
+    - 落叶、杂草等干扰物
+
+bonus_classes:
+  enabled: false
+  eligibility: 仅多足/多轮组，需用户确认
+  proposed_if_enabled:
+    7: treasure_chest
+    8: treasure
+    9: treasure_drop_zone
+
+annotation_policy:
+  accepted_to_training: true
+  review_to_training: false
+  rejected_to_training: false
+  all_visible_instances_must_be_labeled: true
+  frame_complete_rule: >-
+    某帧只有在该帧声明为活跃的所有实例均有合格mask，且实例mask没有严重冲突时，
+    才能进入正式YOLO训练集，避免漏标实例形成假负样本。
