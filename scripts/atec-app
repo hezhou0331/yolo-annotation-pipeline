@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# The launcher may be called from an activated Orbbec/Conda/ROS/Snap shell.
+# Those environments can inject an older libc through LD_LIBRARY_PATH, which
+# makes Ubuntu's /usr/bin/python3 fail before PyQt5 is imported.  The GUI uses
+# system Python intentionally, so it must also use the system dynamic linker
+# search path.
+unset LD_LIBRARY_PATH
+unset LD_PRELOAD
+
+# VS Code installed as a Snap injects GTK search paths from its core20 runtime.
+# Loading those GTK modules into Ubuntu's system PyQt5 mixes incompatible glibc
+# versions and crashes with an __libc_pthread_init / GLIBC_PRIVATE error.
+unset GTK_PATH
+unset GTK_EXE_PREFIX
+
+exec /usr/bin/python3 -m atec_pipeline.gui_app "$@"

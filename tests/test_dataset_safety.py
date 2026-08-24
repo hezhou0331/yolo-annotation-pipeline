@@ -42,6 +42,8 @@ def write_scene_report(path: Path, scene: Path, split: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         'scene': str(scene), 'split': split,
+        'capture_session_id': f'session_{split}',
+        'source_video_id': f'{scene.name}_video',
         'frame_status_counts': {'accepted': 1, 'review': 0, 'rejected': 0},
     }, ensure_ascii=False), encoding='utf-8')
 
@@ -115,25 +117,28 @@ def main():
     write_label(dataset / 'labels/val/val_bg01_000000.txt')
     (dataset / 'dataset.yaml').write_text(yaml.safe_dump({
         'path': str(dataset), 'train': 'images/train', 'val': 'images/val',
-        'test': 'images/val', 'names': {0: 'can', 1: 'watermelon_rind'},
+        'test': 'images/val', 'names': {
+            0: 'can', 1: 'watermelon_rind', 2: 'meal_box', 3: 'red_paper_bag',
+            4: 'blue_bin', 5: 'green_bin', 6: 'red_bin',
+        },
     }, sort_keys=False), encoding='utf-8')
     write_scene_report(dataset / 'project_reports/train_bg01_train_report.json', TMP / 'scenes/train_bg01', 'train')
     write_scene_report(dataset / 'project_reports/val_bg01_val_report.json', TMP / 'scenes/val_bg01', 'val')
     passed = run([sys.executable, ROOT / 'tools/train_yolo11_seg.py', '--data', dataset / 'dataset.yaml',
-                  '--validate-only', '--require-project-reports'])
+                  '--validate-only', '--require-project-reports', '--require-source-ids'])
     assert '数据验证通过' in passed.stdout
 
     # 即使文件名不同，内容相同也必须拒绝，防止train/val泄漏。
     shutil.copy2(train_image, val_image)
     duplicated = run([sys.executable, ROOT / 'tools/train_yolo11_seg.py', '--data', dataset / 'dataset.yaml',
-                      '--validate-only', '--require-project-reports'], expect=1)
+                      '--validate-only', '--require-project-reports', '--require-source-ids'], expect=1)
     assert '内容完全相同' in duplicated.stdout + duplicated.stderr
 
     # 恢复不同图片后，同一RGB-D场景跨split复用也必须拒绝。
     write_image(val_image, 180)
     write_scene_report(dataset / 'project_reports/val_bg01_val_report.json', TMP / 'scenes/train_bg01', 'val')
     reused = run([sys.executable, ROOT / 'tools/train_yolo11_seg.py', '--data', dataset / 'dataset.yaml',
-                  '--validate-only', '--require-project-reports'], expect=1)
+                  '--validate-only', '--require-project-reports', '--require-source-ids'], expect=1)
     assert '同一个RGB-D场景' in reused.stdout + reused.stderr
 
     print('DATASET_SAFETY_ASSERTIONS_PASSED')

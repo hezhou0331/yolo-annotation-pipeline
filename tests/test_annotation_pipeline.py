@@ -145,7 +145,34 @@ def main():
     dataset_yaml = yaml.safe_load((project_output / 'dataset.yaml').read_text(encoding='utf-8'))
     assert dataset_yaml['names'][6] == 'red_bin', dataset_yaml
     assert dataset_yaml['val'] == 'images/val', dataset_yaml
-    assert dataset_yaml['test'] == 'images/val', dataset_yaml
+    assert 'test' not in dataset_yaml, 'val must not be advertised as an independent test split'
+
+    # Human review is persisted beside the source scene and must survive a full
+    # tracker/export rerun. It may promote a valid mask, but never invent one.
+    manual_review = scene / 'project_reports/manual_mask_review/a.json'
+    manual_review.parent.mkdir(parents=True, exist_ok=True)
+    manual_review.write_text(json.dumps({
+        'schema_version': 1,
+        'scene': scene.name,
+        'instance_id': 'a',
+        'frames': {
+            '000004': {'status': 'accepted', 'reason': 'manual_confirmed'},
+            '000006': {'status': 'rejected', 'reason': 'manual_drift'},
+        },
+    }), encoding='utf-8')
+    run([sys.executable, ROOT / 'tools/annotate_multinstance_project.py', '--manifest', manifest_path])
+    manual_report = json.loads(
+        (project_output / '_staging/scene/a/quality_reports/train/class_000_a/quality_report.json').read_text(encoding='utf-8')
+    )
+    manual_records = {row['id']: row for row in manual_report['records']}
+    assert manual_records['000004']['auto_status'] == 'review'
+    assert manual_records['000004']['manual_status'] == 'accepted'
+    assert manual_records['000004']['status'] == 'accepted'
+    assert manual_records['000006']['manual_status'] == 'rejected'
+    assert manual_records['000006']['has_label'] is False
+    assert (project_output / 'labels/train/smoke_000004.txt').exists()
+    assert not (project_output / 'labels/train/smoke_000006.txt').exists()
+
     print('ALL_ASSERTIONS_PASSED')
     print(json.dumps({
         'mask_sequence_counts': report_a['status_counts'],

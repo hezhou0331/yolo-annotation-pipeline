@@ -71,6 +71,42 @@ def read_mask(path: Path, shape):
     return mask if mask.any() else None
 
 
+def prepare_mask_prompt(mask: np.ndarray) -> np.ndarray:
+    """Convert a non-empty binary mask to Ultralytics 8.4 SAM2 prompt layout.
+
+    SAM2DynamicInteractivePredictor currently sends every prompt image through
+    ``LetterBox.apply_image()``, which expects an explicit channel dimension.
+    Supplying the historically accepted ``N x H x W`` layout therefore crashes
+    with ``not enough values to unpack``.  Keep this compatibility conversion in
+    one place so human keyframes, optical-flow recovery and memory refreshes use
+    the exact same representation.
+    """
+    array = np.asarray(mask)
+    if array.ndim == 2:
+        array = array[None, :, :, None]
+    elif array.ndim == 4:
+        if array.shape[0] != 1:
+            raise ValueError(f"SAM2 Mask prompt只支持单个实例，收到shape={array.shape}")
+        if array.shape[-1] != 1:
+            raise ValueError(f"SAM2 Mask prompt必须是单通道，收到shape={array.shape}")
+    else:
+        raise ValueError(f"SAM2 Mask prompt必须是二维Mask或N×H×W×1，收到shape={array.shape}")
+    prompt = (array > 0).astype(np.uint8, copy=False)
+    if not prompt.any():
+        raise ValueError("SAM2 Mask prompt不能为空")
+    return np.ascontiguousarray(prompt)
+
+
+def predict_with_mask_prompt(predictor, image: np.ndarray, mask: np.ndarray, *, update_memory: bool):
+    """Call SAM2 with a validated, version-compatible single-object prompt."""
+    return predictor(
+        source=image,
+        masks=prepare_mask_prompt(mask),
+        obj_ids=[0],
+        update_memory=update_memory,
+    )
+
+
 def build_predictor(model: SAM, args):
     overrides = {
         "conf": 0.0, "task": "segment", "mode": "predict",
@@ -163,12 +199,12 @@ def main():
             if key_mask is not None:
                 # A trusted keyframe starts a fresh memory bank: deterministic re-registration.
                 predictor = build_predictor(model, args)
-                results = predictor(source=bgr, masks=key_mask[None].astype(np.uint8), obj_ids=[0], update_memory=True)
+                results = predict_with_mask_prompt(predictor, bgr, key_mask, update_memory=True)
                 mask, score = result_mask(results, bgr.shape[:2])
                 mode = "keyframe_register"
                 frames_since_key = 0
                 if mask is None:
-                    mask = key_mask
+                    raise RuntimeError("SAM2关键帧注册未返回有效Mask")
             elif predictor is None:
                 records.append({
                     "id": stem, "status": "rejected", "mode": "waiting_for_keyframe",
@@ -180,6 +216,8 @@ def main():
                 mask, score = result_mask(results, bgr.shape[:2])
                 frames_since_key += 1
         except Exception as exc:
+            if key_mask is not None:
+                raise RuntimeError(f"SAM2关键帧{stem}注册失败: {type(exc).__name__}: {exc}") from exc
             mask = None
             error = f"{type(exc).__name__}: {exc}"
         else:
@@ -216,8 +254,8 @@ def main():
             if seed is not None:
                 try:
                     recovered_predictor = build_predictor(model, args)
-                    recovered_results = recovered_predictor(
-                        source=bgr, masks=seed[None].astype(np.uint8), obj_ids=[0], update_memory=True,
+                    recovered_results = predict_with_mask_prompt(
+                        recovered_predictor, bgr, seed, update_memory=True,
                     )
                     recovered_mask, recovered_score = result_mask(recovered_results, bgr.shape[:2])
                 except Exception as exc:
@@ -255,7 +293,7 @@ def main():
             failures = 0
             if key_mask is None and mode != "auto_reregister_flow" and args.memory_update_interval > 0 and frames_since_key % args.memory_update_interval == 0:
                 try:
-                    predictor(source=bgr, masks=mask[None].astype(np.uint8), obj_ids=[0], update_memory=True)
+                    predict_with_mask_prompt(predictor, bgr, mask, update_memory=True)
                     mode = "track_memory_update"
                 except Exception as exc:
                     reasons.append(f"memory_update_failed:{type(exc).__name__}")

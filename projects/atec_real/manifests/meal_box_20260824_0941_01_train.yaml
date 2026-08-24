@@ -1,0 +1,61 @@
+classes:
+  0: can
+  1: watermelon_rind
+  2: meal_box
+  3: red_paper_bag
+  4: blue_bin
+  5: green_bin
+  6: red_bin
+project:
+  scene: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/scenes/meal_box/meal_box_20260824_0941_01
+  output: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/datasets/atec_yolo11_seg
+  foundationpose_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/third_party/FoundationPose
+  sam2_python: /home/hezhou/miniforge3/envs/yolo11/bin/python
+  sam2_model: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/models/sam2.1_t.pt
+  sam2_device: 0
+  sam2_imgsz: 640
+  sam2_memory_update_interval: 5
+  sam2_auto_reregister: true
+  sam2_auto_reregister_after_failures: 1
+  sam2_min_recovery_seed_iou: 0.35
+  sam2_max_flow_shift_norm: 0.35
+  split: train
+  capture_session_id: session_meal_box_20260824_0941_01
+  source_video_id: meal_box_20260824_0941_01_clip_01
+  name_prefix: meal_box_20260824_0941_01_
+  image_mode: hardlink
+  inference_max_side: 640
+  max_consecutive_rejects: 3
+  max_instance_overlap: 0.2
+  include_review: false
+  keep_conflicts: false
+  allow_val_fallback_for_smoke: false
+  quality:
+    min_mask_area: 80
+    min_area_fraction: 0.00015
+    max_area_fraction: 0.65
+    min_depth_coverage: 0.45
+    max_depth_median_abs_m: 0.05
+    max_depth_rmse_m: 0.08
+    min_area_ratio: 0.45
+    max_area_ratio: 2.2
+    max_center_shift_norm: 0.35
+    max_translation_jump_m: 0.2
+    max_rotation_jump_deg: 55
+    min_dominant_component_ratio: 0.75
+    min_registration_iou: 0.45
+  mask_quality:
+    min_mask_area: 80
+    min_depth_coverage: 0.25
+    min_area_ratio: 0.35
+    max_area_ratio: 2.8
+    max_center_shift_norm: 0.4
+    min_dominant_component_ratio: 0.7
+instances:
+- instance_id: meal_box_01
+  class_id: 2
+  class_name: meal_box
+  tracker: sam2
+  start: 0
+  max_frames: 0
+  key_mask_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/key_masks/meal_box_20260824_0941_01/meal_box_01

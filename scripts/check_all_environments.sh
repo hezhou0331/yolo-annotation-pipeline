@@ -24,7 +24,7 @@ print('OpenCV', cv2.__version__)
 print('CUDA', torch.cuda.is_available())
 if torch.cuda.is_available():
     print('GPU', torch.cuda.get_device_name(0))
-for relative in ('models/yolo11n-seg.pt', 'models/sam2.1_t.pt'):
+for relative in ('models/yolo11s-seg.pt', 'models/yolo11n-seg.pt', 'models/sam2.1_t.pt'):
     model = root / relative
     print(relative, model.exists(), model.stat().st_size if model.exists() else 0)
 PY

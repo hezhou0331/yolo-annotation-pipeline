@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ORBBEC_PY = Path.home() / "miniforge3/envs/orbbec/bin/python"
 DEFAULT_FP_PY = Path.home() / "miniforge3/envs/foundationpose/bin/python"
 DEFAULT_YOLO_PY = Path.home() / "miniforge3/envs/yolo11/bin/python"
+DEFAULT_YELLOW_CAPTURE = ROOT / "projects/atec_real/data/scenes/yellow_can_train_01"
 
 
 def env_path(name: str, default: Path) -> Path:
@@ -48,7 +49,8 @@ def doctor(args: argparse.Namespace) -> int:
     required = {
         "Gemini 336L采集脚本": ROOT / "tools/capture_orbbec_rgbd.py",
         "SAM2权重": ROOT / "models/sam2.1_t.pt",
-        "YOLO11-seg权重": ROOT / "models/yolo11n-seg.pt",
+        "YOLO11s-seg主线权重": ROOT / "models/yolo11s-seg.pt",
+        "YOLO11n-seg速度备选权重": ROOT / "models/yolo11n-seg.pt",
         "FoundationPose": ROOT / "third_party/FoundationPose/run_demo.py",
     }
     missing_assets = []
@@ -78,20 +80,63 @@ def init_project(args: argparse.Namespace) -> int:
     cmd = [py, ROOT / "tools/prepare_atec_project.py", "--project-root", args.project_root,
            "--scene-name", args.scene_name, "--split", args.split,
            "--can-tracker", args.can_tracker, "--instances-per-class", str(args.instances_per_class)]
+    if args.only_class:
+        cmd.extend(["--only-class", args.only_class])
+    if args.scene_class:
+        cmd.extend(["--scene-class", args.scene_class])
+    if args.capture_session_id:
+        cmd.extend(["--capture-session-id", args.capture_session_id])
+    if args.source_video_id:
+        cmd.extend(["--source-video-id", args.source_video_id])
     add_bool_flag(cmd, args.include_bins, "--include-bins")
     add_bool_flag(cmd, args.force_manifest, "--force-manifest")
     return run(cmd)
 
 
+def capture_command(
+    *,
+    output: Path,
+    width: int,
+    height: int,
+    fps: int,
+    warmup: int,
+    interval: float,
+    max_frames: int,
+    min_depth: int,
+    max_depth: int,
+    auto: bool,
+    no_preview: bool,
+    resume: bool,
+) -> list[str | Path]:
+    cmd: list[str | Path] = [
+        ROOT / "scripts/capture_orbbec.sh", output,
+        "--width", str(width), "--height", str(height), "--fps", str(fps),
+        "--warmup", str(warmup), "--interval", str(interval),
+        "--max-frames", str(max_frames), "--min-depth", str(min_depth),
+        "--max-depth", str(max_depth),
+    ]
+    add_bool_flag(cmd, auto, "--auto")
+    add_bool_flag(cmd, no_preview, "--no-preview")
+    add_bool_flag(cmd, resume, "--resume")
+    return cmd
+
+
 def capture(args: argparse.Namespace) -> int:
-    cmd = [ROOT / "scripts/capture_orbbec.sh", args.output,
-           "--width", str(args.width), "--height", str(args.height), "--fps", str(args.fps),
-           "--warmup", str(args.warmup), "--interval", str(args.interval),
-           "--max-frames", str(args.max_frames), "--min-depth", str(args.min_depth),
-           "--max-depth", str(args.max_depth)]
-    add_bool_flag(cmd, args.auto, "--auto")
-    add_bool_flag(cmd, args.no_preview, "--no-preview")
-    return run(cmd)
+    return run(capture_command(
+        output=args.output, width=args.width, height=args.height, fps=args.fps,
+        warmup=args.warmup, interval=args.interval, max_frames=args.max_frames,
+        min_depth=args.min_depth, max_depth=args.max_depth, auto=args.auto,
+        no_preview=args.no_preview, resume=args.resume,
+    ))
+
+
+def capture_yellow_can(args: argparse.Namespace) -> int:
+    print("黄罐简化采集：自动保存 RGB-D；采集中按 Ctrl+C 停止，已保存帧会保留。")
+    return run(capture_command(
+        output=args.output, width=640, height=480, fps=30, warmup=args.warmup,
+        interval=args.interval, max_frames=args.max_frames, min_depth=200,
+        max_depth=3000, auto=True, no_preview=False, resume=args.resume,
+    ))
 
 
 def segment(args: argparse.Namespace) -> int:
@@ -121,6 +166,23 @@ def mask(args: argparse.Namespace) -> int:
     return run(cmd)
 
 
+def propose(args: argparse.Namespace) -> int:
+    cmd = [interpreters()["yolo11"], ROOT / "tools/propose_key_masks_yolo_sam2.py", "propose",
+           "--manifest", args.manifest, "--segments", args.segments,
+           "--teacher-config", args.teacher_config]
+    if args.output:
+        cmd.extend(["--output", args.output])
+    for segment_id in args.segment_id or []:
+        cmd.extend(["--segment-id", str(segment_id)])
+    add_bool_flag(cmd, args.check_only, "--check-only")
+    return run(cmd)
+
+
+def promote(args: argparse.Namespace) -> int:
+    return run([interpreters()["yolo11"], ROOT / "tools/propose_key_masks_yolo_sam2.py", "promote",
+                "--proposal-json", args.proposal_json, "--instance-id", args.instance_id])
+
+
 def annotate(args: argparse.Namespace) -> int:
     cmd = [interpreters()["foundationpose"], ROOT / "tools/annotate_multinstance_project.py",
            "--manifest", args.manifest]
@@ -142,24 +204,45 @@ def full_run(args: argparse.Namespace) -> int:
 
 def validate(args: argparse.Namespace) -> int:
     cmd = [interpreters()["yolo11"], ROOT / "tools/train_yolo11_seg.py", "--data", args.data,
-           "--model", args.model, "--validate-only", "--require-project-reports"]
+           "--model", args.model, "--validate-only", "--require-project-reports", "--require-source-ids"]
+    if args.reviewed_negatives:
+        cmd.extend(["--reviewed-negatives", args.reviewed_negatives])
     return run(cmd)
 
 
 def train(args: argparse.Namespace) -> int:
     cmd = [interpreters()["yolo11"], ROOT / "tools/train_yolo11_seg.py", "--data", args.data,
-           "--model", args.model, "--epochs", str(args.epochs), "--imgsz", str(args.imgsz),
+           "--model", args.model, "--init-mode", args.init_mode,
+           "--xcx-detect-model", args.xcx_detect_model, "--transfer-architecture", args.transfer_architecture,
+           "--epochs", str(args.epochs), "--imgsz", str(args.imgsz),
            "--batch", str(args.batch), "--device", args.device, "--workers", str(args.workers),
            "--project", args.project, "--name", args.name, "--patience", str(args.patience),
-           "--cache", args.cache, "--require-project-reports"]
+           "--seed", str(args.seed), "--cache", args.cache,
+           "--require-project-reports", "--require-source-ids"]
+    if args.reviewed_negatives:
+        cmd.extend(["--reviewed-negatives", args.reviewed_negatives])
+    return run(cmd)
+
+
+def evaluate(args: argparse.Namespace) -> int:
+    cmd = [interpreters()["yolo11"], ROOT / "tools/evaluate_yolo11_seg_candidates.py",
+           "--data", args.data, "--distractor-dir", args.distractor_dir,
+           "--fps-source", args.fps_source, "--output", args.output,
+           "--device", args.device, "--imgsz", str(args.imgsz), "--conf", str(args.conf),
+           "--max-fps-frames", str(args.max_fps_frames)]
+    for model in args.model:
+        cmd.extend(["--model", model])
     return run(cmd)
 
 
 def smoke_test(_: argparse.Namespace) -> int:
     jobs = [
+        [interpreters()["foundationpose"], ROOT / "tests/test_capture_safety.py"],
+        [interpreters()["foundationpose"], ROOT / "tests/test_prepare_project_single_class.py"],
         [interpreters()["yolo11"], ROOT / "tests/test_sam2_recovery.py"],
         [interpreters()["yolo11"], ROOT / "tests/test_annotation_pipeline.py"],
         [interpreters()["foundationpose"], ROOT / "tests/test_dataset_safety.py"],
+        [interpreters()["yolo11"], ROOT / "tests/test_xcx_integration.py"],
     ]
     for cmd in jobs:
         run(cmd)
@@ -199,6 +282,9 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("--split", choices=["train", "val", "test"], default="train")
     x.add_argument("--can-tracker", choices=["sam2", "foundationpose"], default="sam2")
     x.add_argument("--instances-per-class", type=int, default=1)
+    x.add_argument("--only-class", choices=["can", "watermelon_rind", "meal_box", "red_paper_bag", "blue_bin", "green_bin", "red_bin"], help="只启用一个类别")
+    x.add_argument("--scene-class", choices=["can", "watermelon_rind", "meal_box", "red_paper_bag", "blue_bin", "green_bin", "red_bin"], help="将场景写入按类别目录")
+    x.add_argument("--capture-session-id"); x.add_argument("--source-video-id")
     x.add_argument("--include-bins", action="store_true"); x.add_argument("--force-manifest", action="store_true")
     x.set_defaults(func=init_project)
 
@@ -208,7 +294,16 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("--warmup", type=int, default=20); x.add_argument("--auto", action="store_true")
     x.add_argument("--interval", type=float, default=0.5); x.add_argument("--max-frames", type=int, default=0)
     x.add_argument("--no-preview", action="store_true"); x.add_argument("--min-depth", type=int, default=200)
-    x.add_argument("--max-depth", type=int, default=3000); x.set_defaults(func=capture)
+    x.add_argument("--max-depth", type=int, default=3000); x.add_argument("--resume", action="store_true", help="明确允许向已有目录追加帧")
+    x.set_defaults(func=capture)
+
+    x = sub.add_parser("capture-yellow-can", help="黄罐简化采集：自动保存，Ctrl+C 安全停止")
+    x.add_argument("--output", type=Path, default=DEFAULT_YELLOW_CAPTURE)
+    x.add_argument("--warmup", type=int, default=20, help="保存前丢弃的预热帧数")
+    x.add_argument("--interval", type=float, default=0.1, help="自动保存间隔，单位秒")
+    x.add_argument("--max-frames", type=int, default=0, help="保存数量；0 表示不限制")
+    x.add_argument("--resume", action="store_true", help="明确允许向已有目录追加帧")
+    x.set_defaults(func=capture_yellow_can)
 
     x = sub.add_parser("segment", help="自动切分RGB-D序列并检查关键Mask")
     x.add_argument("manifest", type=Path); x.add_argument("--output", type=Path)
@@ -226,6 +321,15 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("--mask-input", type=Path); x.add_argument("--brush-size", type=int, default=25)
     x.add_argument("--no-resume", action="store_true"); x.set_defaults(func=mask)
 
+    x = sub.add_parser("propose", help="用xcx检测框和SAM2生成关键Mask候选（不写入正式Mask）")
+    x.add_argument("manifest", type=Path); x.add_argument("segments", type=Path)
+    x.add_argument("--teacher-config", type=Path, default=ROOT / "configs/xcx_teacher.yaml")
+    x.add_argument("--output", type=Path); x.add_argument("--segment-id", type=int, action="append")
+    x.add_argument("--check-only", action="store_true"); x.set_defaults(func=propose)
+
+    x = sub.add_parser("promote", help="把人工确认候选显式晋升到某个实例，拒绝覆盖")
+    x.add_argument("proposal_json", type=Path); x.add_argument("instance_id"); x.set_defaults(func=promote)
+
     x = sub.add_parser("annotate", help="SAM2/FoundationPose传播、质量过滤和YOLO聚合")
     x.add_argument("manifest", type=Path); x.add_argument("--skip-tracking", action="store_true")
     x.add_argument("--dry-run", action="store_true"); x.add_argument("--include-review", action="store_true")
@@ -237,16 +341,27 @@ def parser() -> argparse.ArgumentParser:
     x.set_defaults(func=full_run)
 
     x = sub.add_parser("validate", help="只做YOLO数据安全检查，不训练")
-    x.add_argument("data", type=Path); x.add_argument("--model", type=Path, default=ROOT / "models/yolo11n-seg.pt")
-    x.set_defaults(func=validate)
+    x.add_argument("data", type=Path); x.add_argument("--model", type=Path, default=ROOT / "models/yolo11s-seg.pt")
+    x.add_argument("--reviewed-negatives", type=Path); x.set_defaults(func=validate)
 
     x = sub.add_parser("train", help="训练YOLO11 Segmentation")
-    x.add_argument("data", type=Path); x.add_argument("--model", type=Path, default=ROOT / "models/yolo11n-seg.pt")
+    x.add_argument("data", type=Path); x.add_argument("--model", type=Path, default=ROOT / "models/yolo11s-seg.pt")
+    x.add_argument("--init-mode", choices=["baseline", "xcx-transfer"], default="baseline")
+    x.add_argument("--xcx-detect-model", type=Path, default=ROOT / "xcx/checkpoint/unified_yolo11s_640_15class_final.pt")
+    x.add_argument("--transfer-architecture", default="yolo11s-seg.yaml")
     x.add_argument("--epochs", type=int, default=100); x.add_argument("--imgsz", type=int, default=640)
     x.add_argument("--batch", type=int, default=4); x.add_argument("--device", default="0")
     x.add_argument("--workers", type=int, default=4); x.add_argument("--project", type=Path, default=ROOT / "runs/segment")
-    x.add_argument("--name", default="atec_yolo11n_seg"); x.add_argument("--patience", type=int, default=30)
+    x.add_argument("--name", default="atec_yolo11s_seg"); x.add_argument("--patience", type=int, default=30)
+    x.add_argument("--seed", type=int, default=0); x.add_argument("--reviewed-negatives", type=Path)
     x.add_argument("--cache", choices=["false", "ram", "disk"], default="false"); x.set_defaults(func=train)
+
+    x = sub.add_parser("evaluate", help="比较真实val、纯干扰误检和端到端FPS")
+    x.add_argument("data", type=Path); x.add_argument("--model", action="append", required=True, help="NAME=/path/to/best.pt")
+    x.add_argument("--distractor-dir", type=Path, required=True); x.add_argument("--fps-source", type=Path, required=True)
+    x.add_argument("--output", type=Path, required=True); x.add_argument("--device", default="0")
+    x.add_argument("--imgsz", type=int, default=640); x.add_argument("--conf", type=float, default=0.25)
+    x.add_argument("--max-fps-frames", type=int, default=500); x.set_defaults(func=evaluate)
 
     x = sub.add_parser("smoke-test", help="运行CPU/轻量回归测试")
     x.set_defaults(func=smoke_test)

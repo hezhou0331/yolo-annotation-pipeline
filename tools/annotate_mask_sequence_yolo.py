@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--depth-to-metre", type=float, default=None)
     p.add_argument("--image-mode", choices=("hardlink", "copy", "none"), default="none")
     p.add_argument("--include-review", action="store_true")
+    p.add_argument("--review-overrides", type=Path, default=None)
     p.add_argument("--polygon-epsilon", type=float, default=0.002)
     p.add_argument("--min-mask-area", type=int, default=80)
     p.add_argument("--min-depth-coverage", type=float, default=0.25)
@@ -56,6 +58,59 @@ def load_binary(path: Path, shape: tuple[int, int]) -> np.ndarray | None:
     if raw.shape != shape:
         raw = cv2.resize(raw, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
     return raw > 0
+
+
+@dataclass(frozen=True)
+class ManualReviewDecision:
+    status: str
+    auto_status: str
+    manual_status: str | None
+    manual_reason: str | None
+    reject_reasons: tuple[str, ...]
+    review_reasons: tuple[str, ...]
+
+
+def load_manual_review(path: Path | None) -> dict[str, dict]:
+    if path is None:
+        return {}
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        return {}
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    result = {}
+    for frame_id, row in (payload.get("frames") or {}).items():
+        status = str((row or {}).get("status", ""))
+        if status in {"accepted", "review", "rejected"}:
+            result[str(frame_id)] = dict(row)
+    return result
+
+
+def apply_manual_review(
+    frame_id: str,
+    auto_status: str,
+    reject_reasons: list[str],
+    review_reasons: list[str],
+    line: str | None,
+    overrides: dict[str, dict],
+) -> ManualReviewDecision:
+    override = overrides.get(frame_id)
+    if not override:
+        return ManualReviewDecision(
+            auto_status, auto_status, None, None,
+            tuple(reject_reasons), tuple(review_reasons),
+        )
+    manual_status = str(override["status"])
+    manual_reason = str(override.get("reason") or f"manual_{manual_status}")
+    if manual_status == "accepted":
+        if line is None:
+            return ManualReviewDecision(
+                "rejected", auto_status, manual_status, manual_reason,
+                ("manual_accept_blocked_invalid_mask",), (),
+            )
+        return ManualReviewDecision("accepted", auto_status, manual_status, manual_reason, (), ())
+    if manual_status == "review":
+        return ManualReviewDecision("review", auto_status, manual_status, manual_reason, (), (manual_reason,))
+    return ManualReviewDecision("rejected", auto_status, manual_status, manual_reason, (manual_reason,), ())
 
 
 def main() -> int:
@@ -93,6 +148,7 @@ def main() -> int:
         max_rotation_jump_deg=1e9,
         min_dominant_component_ratio=args.min_dominant_component_ratio,
     )
+    manual_overrides = load_manual_review(args.review_overrides)
     previous_good_mask = None
     records = []
     for index, rgb_path in enumerate(selected):
@@ -128,6 +184,13 @@ def main() -> int:
             if bbox is not None:
                 line = detection_line(args.class_id, bbox, bgr.shape[1], bgr.shape[0]) if args.task == "detection" else segmentation_line(args.class_id, mask, args.polygon_epsilon)
 
+        auto_status = status
+        auto_reject_reasons = list(reject_reasons)
+        auto_review_reasons = list(review_reasons)
+        decision = apply_manual_review(stem, auto_status, reject_reasons, review_reasons, line, manual_overrides)
+        status = decision.status
+        reject_reasons = list(decision.reject_reasons)
+        review_reasons = list(decision.review_reasons)
         eligible = line is not None and (status == "accepted" or (status == "review" and args.include_review))
         label_path = labels_dir / f"{output_id}.txt"
         if eligible:
@@ -135,7 +198,7 @@ def main() -> int:
             place_image(rgb_path, images_dir / f"{output_id}{rgb_path.suffix.lower()}", args.image_mode)
         elif label_path.exists():
             label_path.unlink()
-        if status != "rejected":
+        if auto_status != "rejected":
             previous_good_mask = mask.copy()
 
         cv2.imwrite(str(masks_out / f"{output_id}.png"), mask.astype(np.uint8) * 255)
@@ -144,11 +207,20 @@ def main() -> int:
         overlay = vis.copy(); overlay[mask] = color
         vis = cv2.addWeighted(vis, 0.72, overlay, 0.28, 0)
         cv2.putText(vis, f"{stem} mask_sequence {status}", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        for old_status in ("accepted", "review", "rejected"):
+            old_path = vis_root / old_status / f"{output_id}.jpg"
+            if old_status != status and old_path.exists():
+                old_path.unlink()
         cv2.imwrite(str(vis_root / status / f"{output_id}.jpg"), vis)
         records.append({
             "id": stem,
             "output_id": output_id,
             "status": status,
+            "auto_status": auto_status,
+            "manual_status": decision.manual_status,
+            "manual_reason": decision.manual_reason,
+            "auto_reject_reasons": auto_reject_reasons,
+            "auto_review_reasons": auto_review_reasons,
             "mode": "mask_sequence",
             "segment_id": 0,
             "has_label": bool(eligible),
@@ -167,11 +239,11 @@ def main() -> int:
         "status_counts": counts, "records": records,
     }
     (report_dir / "quality_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    fields = ["id", "output_id", "status", "has_label", "reject_reasons", "review_reasons"]
+    fields = ["id", "output_id", "status", "auto_status", "manual_status", "manual_reason", "has_label", "reject_reasons", "review_reasons"]
     with (report_dir / "quality_report.csv").open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields); writer.writeheader()
         for r in records:
-            writer.writerow({"id": r["id"], "output_id": r["output_id"], "status": r["status"], "has_label": r["has_label"], "reject_reasons": "|".join(r["reject_reasons"]), "review_reasons": "|".join(r["review_reasons"])})
+            writer.writerow({"id": r["id"], "output_id": r["output_id"], "status": r["status"], "auto_status": r["auto_status"], "manual_status": r["manual_status"], "manual_reason": r["manual_reason"], "has_label": r["has_label"], "reject_reasons": "|".join(r["reject_reasons"]), "review_reasons": "|".join(r["review_reasons"])})
     print(f"完成：accepted={counts['accepted']} review={counts['review']} rejected={counts['rejected']}")
     return 0
 

@@ -68,6 +68,13 @@ def add_optional(cmd: list[str], flag: str, value: Any) -> None:
         cmd.extend([flag, str(value)])
 
 
+def add_review_override_arg(cmd: list[str], scene: Path, instance_id: str) -> Path:
+    """Attach the stable, source-scene manual review sidecar to an export command."""
+    path = Path(scene).expanduser().resolve() / "project_reports" / "manual_mask_review" / f"{safe_name(instance_id)}.json"
+    cmd.extend(["--review-overrides", str(path)])
+    return path
+
+
 def run_tracker(
     instance: dict[str, Any],
     common: dict[str, Any],
@@ -107,6 +114,7 @@ def run_tracker(
                 add_optional(cmd, flag, quality[key])
         if common.get("include_review", False):
             cmd.append("--include-review")
+        add_review_override_arg(cmd, scene, instance_id)
         return cmd
 
     commands: list[list[str]] = []
@@ -415,15 +423,18 @@ def main() -> int:
     test_has = any((output / "images" / "test").glob("*.png"))
     allow_val_fallback = bool(common.get("allow_val_fallback_for_smoke", False))
     val_rel = "images/val" if val_has or not allow_val_fallback else "images/train"
-    test_rel = "images/test" if test_has else "images/val"
+    test_rel = "images/test" if test_has else None
     names_yaml = "".join(f"  {k}: {v}\n" for k, v in classes.items())
+    test_yaml = f"test: {test_rel}\n" if test_rel else ""
     (output / "dataset.yaml").write_text(
-        f"path: {output}\ntrain: images/train\nval: {val_rel}\ntest: {test_rel}\nnames:\n{names_yaml}", encoding="utf-8"
+        f"path: {output}\ntrain: images/train\nval: {val_rel}\n{test_yaml}names:\n{names_yaml}", encoding="utf-8"
     )
 
     counts = {s: sum(r["status"] == s for r in frame_records) for s in ("accepted", "review", "rejected")}
     project_report = {
         "manifest": str(manifest_path), "scene": str(scene), "output": str(output), "split": split,
+        "capture_session_id": common.get("capture_session_id"),
+        "source_video_id": common.get("source_video_id"),
         "classes": classes, "instances": all_instance_reports, "frame_status_counts": counts,
         "max_instance_overlap": overlap_limit, "frames": frame_records,
         "dataset_split_policy": {

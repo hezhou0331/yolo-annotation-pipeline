@@ -17,6 +17,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from capture_safety import (
+    CaptureOutputExistsError,
+    finalize_metadata,
+    prepare_capture_output,
+    write_metadata_atomic,
+)
 from pyorbbecsdk import (
     Config,
     Context,
@@ -38,7 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto", action="store_true", help="按时间间隔自动保存；否则按空格保存")
     parser.add_argument("--interval", type=float, default=0.5, help="自动保存间隔，单位秒")
     parser.add_argument("--max-frames", type=int, default=0, help="保存数量；0 表示不限制")
-    parser.add_argument("--no-preview", action="store_true", help="不显示预览窗口（必须配合 --auto）")
+    parser.add_argument("--resume", action="store_true", help="明确允许向已有采集目录追加帧")
+    parser.add_argument("--no-preview", action="store_true", help="不显示预览窗口（必须配合 --auto；Ctrl+C 停止）")
     parser.add_argument("--min-depth", type=int, default=100, help="预览/统计的最小深度 mm")
     parser.add_argument("--max-depth", type=int, default=5000, help="预览/统计的最大深度 mm")
     parser.add_argument(
@@ -140,6 +147,15 @@ def main() -> int:
         print("错误：--interval 不能小于 0。", file=sys.stderr)
         return 2
 
+    if not args.check_only:
+        try:
+            output_dirs = prepare_capture_output(args.output, resume=args.resume)
+        except CaptureOutputExistsError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 2
+    else:
+        output_dirs = None
+
     context = Context()
     devices = context.query_devices()
     if devices.get_count() == 0:
@@ -184,12 +200,10 @@ def main() -> int:
     except Exception as exc:
         print(f"提示：硬件帧同步未启用：{exc}")
 
-    output = args.output.expanduser().resolve()
-    rgb_dir = output / "rgb"
-    depth_dir = output / "depth"
-    masks_dir = output / "masks"
-    for directory in (rgb_dir, depth_dir, masks_dir):
-        directory.mkdir(parents=True, exist_ok=True)
+    output = output_dirs["root"]
+    rgb_dir = output_dirs["rgb"]
+    depth_dir = output_dirs["depth"]
+    masks_dir = output_dirs["masks"]
 
     print(f"设备：{device_metadata(devices.get_device_by_index(0).get_device_info())['name']}")
     print(f"彩色配置：{profile_text(color_profile)}")
@@ -201,8 +215,18 @@ def main() -> int:
     saved = 0
     index = next_index(rgb_dir)
     records: list[dict] = []
+    metadata_path = output / "metadata.json"
+    if args.resume and metadata_path.is_file():
+        try:
+            existing_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(existing_metadata.get("frames"), list):
+                records = existing_metadata["frames"]
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"提示：无法读取旧 metadata.json，将从帧文件继续：{exc}")
     last_save_time = -1e9
     started_monotonic = time.monotonic()
+    stop_status = "completed"
+    metadata_path = output / "metadata.json"
 
     try:
         valid_frames = 0
@@ -249,6 +273,9 @@ def main() -> int:
                 "p2": float(camera_param.rgb_distortion.p2),
             },
             "frames": records,
+            "status": "running",
+            "saved_frames": 0,
+            "saved_frames_this_session": 0,
         }
 
         if not args.no_preview:
@@ -315,9 +342,7 @@ def main() -> int:
                 metadata["frames"] = records
                 metadata["saved_frames_this_session"] = saved + 1
                 metadata["last_updated_utc"] = datetime.now(timezone.utc).isoformat()
-                (output / "metadata.json").write_text(
-                    json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+                write_metadata_atomic(metadata_path, metadata)
                 print(
                     f"已保存 {stem} | RGB {color_bgr.shape[1]}x{color_bgr.shape[0]} | "
                     f"有效深度 {valid.mean():.1%}"
@@ -330,13 +355,20 @@ def main() -> int:
                     break
 
             if key in (ord("q"), ord("Q"), 27):
+                stop_status = "stopped_by_window_key"
                 break
 
     except KeyboardInterrupt:
-        print("收到中断，正在安全退出。")
+        stop_status = "stopped_by_ctrl_c"
+        print("收到 Ctrl+C，已保留此前保存的 RGB-D 帧，正在安全退出。")
+    except Exception:
+        stop_status = "failed"
+        raise
     finally:
         pipeline.stop()
         cv2.destroyAllWindows()
+        if "metadata" in locals():
+            finalize_metadata(metadata_path, metadata, status=stop_status, saved_frames=saved)
 
     elapsed = time.monotonic() - started_monotonic
     print(f"采集结束：本次保存 {saved} 帧，用时 {elapsed:.1f} 秒。")

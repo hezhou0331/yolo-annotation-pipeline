@@ -1,0 +1,62 @@
+version: 1
+purpose: xcx检测模型仅用于真实视频关键帧候选框、SAM2提示和干扰物发现，不生成最终真值
+
+official_classes:
+  0: can
+  1: watermelon_rind
+  2: meal_box
+  3: red_paper_bag
+  4: blue_bin
+  5: green_bin
+  6: red_bin
+
+source_to_official:
+  yellow_can: can
+  watermelon_rind: watermelon_rind
+  eco_meal_box: meal_box
+  red_paper_bag: red_paper_bag
+  blue_trash_bin: blue_bin
+  green_trash_bin: green_bin
+  red_trash_bin: red_bin
+
+hard_negative_classes:
+  - plastic_bottle
+  - purple_paper_bag
+  - dry_leaf
+  - non_target_can
+  - non_target_bottle
+  - non_target_container
+  - colored_wrapper
+  - non_target_bag
+
+detectors:
+  - name: robot_objects
+    weights: ../xcx/checkpoint/robot_detector_yolo11s_640_luna1600_final.pt
+    proposal_source: true
+    allowed_official_classes: [can, watermelon_rind, meal_box, red_paper_bag]
+  - name: trash_bins
+    weights: ../xcx/checkpoint/trash_bins_yolo11s_640_final.pt
+    proposal_source: true
+    allowed_official_classes: [blue_bin, green_bin, red_bin]
+  - name: unified_crosscheck
+    weights: ../xcx/checkpoint/unified_yolo11s_640_15class_final.pt
+    proposal_source: false
+    crosscheck_only: true
+
+inference:
+  confidence: 0.25
+  iou: 0.60
+  imgsz: 640
+  device: 0
+
+sam2:
+  model: ../models/sam2.1_t.pt
+  device: 0
+  imgsz: 640
+
+proposal_policy:
+  only_segment_start_frames: true
+  skip_classes_without_missing_manifest_instances: true
+  never_overwrite_accepted_masks: true
+  require_manual_instance_assignment: true
+  staging_root: ../projects/atec_real/data/candidate_masks

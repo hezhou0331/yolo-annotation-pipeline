@@ -1,0 +1,39 @@
+version: 1
+final_task: yolo11-seg
+official_class_count: 7
+bonus_enabled: false
+
+sessions:
+  train: [session_01, session_02, session_03]
+  val: [session_04]
+  independent_setup_required: true
+  forbid_adjacent_frames_across_splits: true
+
+clips_per_session:
+  single_class_objects:
+    count: 4
+    classes: [can, watermelon_rind, meal_box, red_paper_bag]
+  three_bins:
+    count: 1
+    classes: [blue_bin, green_bin, red_bin]
+  mixed_targets:
+    count: 2
+  distractor_only:
+    count: 1
+    empty_labels_allowed_only_after_manual_review: true
+
+capture:
+  duration_seconds: [20, 40]
+  source: Orbbec_Gemini_336L_RGB-D_video
+  all_visible_official_instances_must_be_labeled: true
+
+validation:
+  manually_reviewed_frames: [60, 100]
+  xcx_output_is_not_ground_truth: true
+  continuous_test_frames_min: 500
+  target_fps: [20, 30]
+
+annotation_efficiency_gate:
+  comparison_keyframes: 20
+  minimum_time_reduction_fraction: 0.30
+  missed_instance_increase_allowed: false

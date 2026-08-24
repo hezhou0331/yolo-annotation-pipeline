@@ -51,6 +51,9 @@ projects/*/reports/
 docs/private/*
 !docs/private/README.md
 
+# xcx同学提供的本地训练仓库、权重和大体积/损坏分卷，仅作为教师资产使用
+xcx/
+
 # Training outputs
 wandb/
 mlruns/

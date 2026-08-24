@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "items": [
+    {
+      "split": "train",
+      "image": "session_01_distractor_000120.png",
+      "reviewed_no_targets": true,
+      "capture_session_id": "session_01",
+      "source_video_id": "session_01_distractor_01",
+      "reviewer": "REPLACE_ME"
+    }
+  ]
+}

@@ -7,11 +7,11 @@ classes:
   5: green_bin
   6: red_bin
 project:
-  scene: ../data/scenes/train_bg01
-  output: ../datasets/atec_yolo11_seg
-  foundationpose_dir: ../../../third_party/FoundationPose
+  scene: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/scenes/can/can_20260824_0938_01
+  output: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/datasets/atec_yolo11_seg
+  foundationpose_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/third_party/FoundationPose
   sam2_python: /home/hezhou/miniforge3/envs/yolo11/bin/python
-  sam2_model: ../../../models/sam2.1_t.pt
+  sam2_model: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/models/sam2.1_t.pt
   sam2_device: 0
   sam2_imgsz: 640
   sam2_memory_update_interval: 5
@@ -19,8 +19,10 @@ project:
   sam2_auto_reregister_after_failures: 1
   sam2_min_recovery_seed_iou: 0.35
   sam2_max_flow_shift_norm: 0.35
-  split: train
-  name_prefix: train_bg01_
+  split: val
+  capture_session_id: session_can_20260824_0938_01
+  source_video_id: can_20260824_0938_01_clip_01
+  name_prefix: can_20260824_0938_01_
   image_mode: hardlink
   inference_max_side: 640
   max_consecutive_rejects: 3
@@ -56,25 +58,4 @@ instances:
   tracker: sam2
   start: 0
   max_frames: 0
-  key_mask_dir: ../data/key_masks/train_bg01/can_01
-- instance_id: watermelon_rind_01
-  class_id: 1
-  class_name: watermelon_rind
-  tracker: sam2
-  start: 0
-  max_frames: 0
-  key_mask_dir: ../data/key_masks/train_bg01/watermelon_rind_01
-- instance_id: meal_box_01
-  class_id: 2
-  class_name: meal_box
-  tracker: sam2
-  start: 0
-  max_frames: 0
-  key_mask_dir: ../data/key_masks/train_bg01/meal_box_01
-- instance_id: red_paper_bag_01
-  class_id: 3
-  class_name: red_paper_bag
-  tracker: sam2
-  start: 0
-  max_frames: 0
-  key_mask_dir: ../data/key_masks/train_bg01/red_paper_bag_01
+  key_mask_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/key_masks/can_20260824_0938_01/can_01

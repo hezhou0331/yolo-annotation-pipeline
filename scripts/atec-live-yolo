@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${ATEC_YOLO_PYTHON:-/home/hezhou/miniforge3/envs/yolo11/bin/python}"
+MODEL="${ATEC_YOLO_MODEL:-$ROOT/runs/segment/atec_4class_baseline_20260824/weights/best.pt}"
+SOURCE="${ATEC_YOLO_SOURCE:-0}"
+CONF="${ATEC_YOLO_CONF:-0.25}"
+IMGSZ="${ATEC_YOLO_IMGSZ:-640}"
+DEVICE="${ATEC_YOLO_DEVICE:-0}"
+
+if [[ ! -x "$PYTHON" ]]; then
+    echo "YOLO Python 不可执行: $PYTHON" >&2
+    exit 2
+fi
+if [[ ! -f "$MODEL" ]]; then
+    echo "训练权重不存在: $MODEL" >&2
+    echo "可通过 ATEC_YOLO_MODEL=/path/to/best.pt 指定模型。" >&2
+    exit 2
+fi
+
+cd "$ROOT"
+echo "启动外接摄像头 YOLO11-seg：source=$SOURCE model=$MODEL" >&2
+exec "$PYTHON" "$ROOT/tools/live_yolo11_seg.py" \
+    --model "$MODEL" \
+    --source "$SOURCE" \
+    --conf "$CONF" \
+    --imgsz "$IMGSZ" \
+    --device "$DEVICE" \
+    "$@"
