@@ -2,9 +2,9 @@
 
 使用 Orbbec Gemini 336L 采集 RGB-D，以人工关键帧 Mask + SAM2 传播生成实例分割标签，通过质量门控导出 YOLO11-seg，并用薄桌面 App 管理采集、标注、验证、训练和实时识别。
 
-## 当前里程碑（2026-08-24）
+## 当前里程碑（2026-08-25）
 
-已经完成第一个**四类阶段性模型**，不是完整七类模型：
+当前完成的是**四类阶段性数据集和模型**，不是完整七类模型：
 
 ```text
 can
@@ -13,34 +13,35 @@ meal_box
 red_paper_bag
 ```
 
-质量门控固定为：`accepted` 进入 `train/val`，`review` 和 `rejected` 不进入。
+质量门控固定为：`accepted` 进入 `train/val`，`review` 和 `rejected` 不进入。经 2026-08-25 重新统计与严格验证，当前共有 **2,098 张 accepted 图片/标签对**：
 
 | split | 图片/标签 | can | watermelon_rind | meal_box | red_paper_bag |
 |---|---:|---:|---:|---:|---:|
-| train | 1107 | 369 | 291 | 143 | 304 |
+| train | 1,820 | 448 | 593 | 475 | 304 |
 | val | 278 | 82 | 65 | 58 | 73 |
+| 合计 | **2,098** | **530** | **658** | **533** | **377** |
 
-验证集按完整场次/采集视频划分，没有随机拆相邻帧。严格验证未发现跨 split 重复图片、`capture_session_id` 或 `source_video_id` 泄漏。当前只有 `train + val`，外接摄像头作为现场测试，不把 `val` 冒充 `test`。
+另外有 `1,032` 帧被标记为 `rejected`，不会进入训练；当前 `review=0`。验证集按完整场次/采集视频划分，没有随机拆相邻帧。严格验证未发现跨 split 重复图片、`capture_session_id` 或 `source_video_id` 泄漏。当前只有 `train + val`，外接摄像头作为现场测试，不把 `val` 冒充 `test`。
 
-正式实验：
+当前最新实验：
 
 ```text
-runs/segment/atec_4class_baseline_20260824
+runs/segment/atec_4class_accepted_finetune_20260824_1634
 ```
 
-配置：`yolo11s-seg.pt`、baseline、100 epochs、batch 4、imgsz 640、device 0。训练因 EarlyStopping 在第 35 轮正常结束，最佳第 5 轮，实际耗时约 16.2 分钟。独立 val 复验：
+该实验使用上述 2,098 张 accepted 数据。最佳验证结果：
 
 ```text
-Mask Precision:   0.838
-Mask Recall:      0.890
-Mask mAP50:       0.933
-Mask mAP50-95:    0.737
+Mask Precision:   0.888
+Mask Recall:      0.916
+Mask mAP50:       0.950
+Mask mAP50-95:    0.782
 ```
 
 最佳权重不进入 Git 历史，通过 GitHub Release 作为可选附件提供：
 
 ```text
-runs/segment/atec_4class_baseline_20260824/weights/best.pt
+runs/segment/atec_4class_accepted_finetune_20260824_1634/weights/best.pt
 ```
 
 详细结果见[工作日志](docs/zh-CN/工作日志.md)。
@@ -64,10 +65,9 @@ App 保持“薄 App”：负责类别选择、场次管理、后台命令和日
 
 ## GitHub 使用手册（队友）
 
-> 当前仓库仍为 **Private**。代码、Manifest 和文档在 Git 中；大体积 RGB-D 数据、Mask、YOLO 数据集和训练权重通过私有 GitHub Release 提供。
-> 未获得仓库权限的账号不能下载数据，也不能提交代码。
+> 当前仓库和数据 Release 均为 **Public**。任何人都可以克隆代码并下载数据；只有被添加为 Collaborator 的队友才能直接向仓库推送代码。
 
-### 1. 仓库管理员添加队友
+### 1. 给队友写权限（可选）
 
 仓库管理员在 GitHub 网页中打开：
 
@@ -75,9 +75,9 @@ App 保持“薄 App”：负责类别选择、场次管理、后台命令和日
 Settings → Collaborators → Add people
 ```
 
-使用队友的 GitHub 用户名或邮箱发送邀请。队友必须先接受邀请，之后才能克隆仓库和下载私有 Release。
+使用队友的 GitHub 用户名或邮箱发送邀请。队友接受邀请后可以推送分支；不需要写权限的使用者可直接克隆和下载。
 
-### 2. 队友第一次安装和登录
+### 2. 队友第一次安装
 
 建议使用 Ubuntu/Linux。先安装基础工具：
 
@@ -86,14 +86,7 @@ sudo apt update
 sudo apt install -y git curl zstd
 ```
 
-安装 GitHub CLI 后登录有权限的 GitHub 账号：
-
-```bash
-gh auth login
-gh auth status
-```
-
-`gh auth status` 必须显示当前账号已经登录。若显示无权访问仓库，请退出后使用接受邀请的账号重新登录。
+公开仓库的克隆与数据下载不要求 GitHub 登录。只有需要推送代码时，才需要配置自己的 GitHub 账号或 SSH Key。
 
 ### 3. 克隆代码并恢复团队数据
 
@@ -105,7 +98,7 @@ cd yolo-annotation-pipeline
 
 下载脚本会自动：
 
-1. 从私有 Release 下载两个数据分卷；
+1. 从公开 Release 下载数据分卷；
 2. 合并分卷；
 3. 校验 SHA-256；
 4. 恢复 `projects/atec_real/data/` 和 `projects/atec_real/datasets/`。
@@ -118,7 +111,7 @@ cd yolo-annotation-pipeline
 
 查看当前数据 Release：
 
-[ATEC data snapshot 2026-08-24](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260824)
+[ATEC data snapshot 2026-08-25](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260825)
 
 ### 4. 配置 Python 环境
 
@@ -261,7 +254,7 @@ third_party/
 xcx/
 ```
 
-这些内容已经由 `.gitignore` 或私有 Release 管理。
+这些内容已经由 `.gitignore` 或 GitHub Release 管理。
 
 ### 11. 常见问题
 
@@ -314,14 +307,14 @@ projects/atec_real/datasets/   导出的 YOLO11-seg 数据集
 
 ### 可选下载真实数据
 
-私有 Git 仓库只保存代码、配置、Manifest 和文档；大体积数据不进入 Git 历史。获得仓库权限的队友需要复现当前采集、Mask Review 或直接使用已导出的
-YOLO11-seg 数据集时，可在克隆仓库并完成 `gh auth login` 后运行：
+Git 仓库只保存代码、配置、Manifest 和文档；大体积数据不进入 Git 历史。需要复现当前采集、Mask Review 或直接使用已导出的
+YOLO11-seg 数据集时，克隆公开仓库后直接运行：
 
 ```bash
 ./scripts/download_atec_data.sh
 ```
 
-脚本从 GitHub Release 下载 `data-20260824` 的两个分卷，自动合并并校验 SHA-256，然后恢复：
+脚本从公开 GitHub Release 下载 `data-20260825` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
 
 ```text
 projects/atec_real/data/

@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="hezhou0331/yolo-annotation-pipeline"
-TAG="${ATEC_DATA_TAG:-data-20260824}"
-ASSET="${ATEC_DATA_ASSET:-atec-real-data-20260824.tar.zst}"
+TAG="${ATEC_DATA_TAG:-data-20260825}"
+ASSET="${ATEC_DATA_ASSET:-atec-real-data-20260825.tar.zst}"
 read -r -a PART_SUFFIXES <<< "${ATEC_DATA_PART_SUFFIXES:-part-aa part-ab}"
 DOWNLOAD_DIR="${ATEC_DOWNLOAD_DIR:-$ROOT/.downloads}"
 FORCE=0
@@ -15,8 +15,8 @@ usage() {
 用法：$(basename "$0") [--force] [--print-url]
 
 下载并恢复 ATEC 真实 RGB-D、关键 Mask、中间结果和 YOLO11-seg 数据集。
-数据包以私有 GitHub Release 的多个分卷发布；脚本会依次下载、合并、校验并解压。
-运行前请安装 GitHub CLI，并使用有仓库权限的账号执行 gh auth login。
+数据包以公开 GitHub Release 的多个分卷发布；脚本会依次下载、合并、校验并解压。
+运行前请安装 curl 和 zstd；下载数据不需要登录 GitHub。
 默认不会覆盖已有 projects/atec_real/data 或 datasets；确需合并覆盖时使用 --force。
 
 选项：
@@ -61,16 +61,21 @@ if ! command -v zstd >/dev/null 2>&1; then
   echo "缺少 zstd。Ubuntu/Debian 可先运行：sudo apt install zstd" >&2
   exit 1
 fi
-if ! command -v gh >/dev/null 2>&1; then
-  echo "缺少 GitHub CLI（gh），无法下载私有数据快照。" >&2
-  echo "安装后请先运行：gh auth login" >&2
+if ! command -v curl >/dev/null 2>&1; then
+  echo "缺少 curl，无法下载公开 GitHub Release 数据快照。" >&2
+  echo "Ubuntu/Debian 可先运行：sudo apt install curl" >&2
   exit 1
 fi
-if ! gh auth status >/dev/null 2>&1; then
-  echo "GitHub CLI 尚未登录，或当前账号无权访问私有仓库。" >&2
-  echo "请先运行：gh auth login" >&2
-  exit 1
-fi
+
+download_asset() {
+  local name="$1"
+  local target="$2"
+  local partial="${target}.partial"
+  rm -f "$partial"
+  curl --fail --location --retry 3 --retry-delay 2 \
+    --output "$partial" "$base_url/$name"
+  mv "$partial" "$target"
+}
 
 mkdir -p "$DOWNLOAD_DIR"
 archive="$DOWNLOAD_DIR/$ASSET"
@@ -83,10 +88,10 @@ for suffix in "${PART_SUFFIXES[@]}"; do
   part_path="$DOWNLOAD_DIR/$part_name"
   part_paths+=("$part_path")
   echo "  $base_url/$part_name"
-  gh release download "$TAG" --repo "$REPO" --pattern "$part_name" --dir "$DOWNLOAD_DIR" --clobber
+  download_asset "$part_name" "$part_path"
 done
 
-gh release download "$TAG" --repo "$REPO" --pattern "$ASSET.sha256" --dir "$DOWNLOAD_DIR" --clobber
+download_asset "$ASSET.sha256" "$checksum"
 : > "$archive"
 for part_path in "${part_paths[@]}"; do
   cat "$part_path" >> "$archive"
