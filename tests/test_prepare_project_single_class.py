@@ -33,6 +33,11 @@ def main() -> int:
         }
         assert manifest["project"]["capture_session_id"] == "session_watermelon_01"
         assert manifest["project"]["source_video_id"] == "session_watermelon_01_clip_01"
+        assert manifest["project"]["scene"] == "../data/scenes/watermelon_rind_train_01"
+        assert manifest["project"]["output"] == "../datasets/atec_yolo11_seg"
+        assert not Path(manifest["project"]["sam2_model"]).is_absolute()
+        assert (manifest_path.parent / manifest["project"]["sam2_model"]).resolve() == ROOT / "models/sam2.1_t.pt"
+        assert manifest["project"]["sam2_python"] == "~/miniforge3/envs/yolo11/bin/python"
         assert manifest["instances"] == [{
             "instance_id": "watermelon_rind_01",
             "class_id": 1,
@@ -40,7 +45,7 @@ def main() -> int:
             "tracker": "sam2",
             "start": 0,
             "max_frames": 0,
-            "key_mask_dir": str(project_root / "data/key_masks/watermelon_rind_train_01/watermelon_rind_01"),
+            "key_mask_dir": "../data/key_masks/watermelon_rind_train_01/watermelon_rind_01",
         }]
 
     print("SINGLE_CLASS_PROJECT_ASSERTIONS_PASSED")

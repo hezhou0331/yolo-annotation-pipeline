@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MAMBA="${MAMBA:-/home/hezhou/miniforge3/bin/mamba}"
+MAMBA="${MAMBA:-$HOME/miniforge3/bin/mamba}"
 WORKDIR="$(mktemp -d -t atec_orbbec_check.XXXXXX)"
 cleanup() { find "$WORKDIR" -depth -delete 2>/dev/null || true; }
 trap cleanup EXIT

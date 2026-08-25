@@ -7,11 +7,11 @@ classes:
   5: green_bin
   6: red_bin
 project:
-  scene: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/scenes/can/yellow_can_train_01
-  output: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/datasets/atec_yolo11_seg
-  foundationpose_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/third_party/FoundationPose
-  sam2_python: /home/hezhou/miniforge3/envs/yolo11/bin/python
-  sam2_model: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/models/sam2.1_t.pt
+  scene: ../data/scenes/can/yellow_can_train_01
+  output: ../datasets/atec_yolo11_seg
+  foundationpose_dir: ../../../third_party/FoundationPose
+  sam2_python: ~/miniforge3/envs/yolo11/bin/python
+  sam2_model: ../../../models/sam2.1_t.pt
   sam2_device: 0
   sam2_imgsz: 640
   sam2_memory_update_interval: 5
@@ -58,4 +58,4 @@ instances:
   tracker: sam2
   start: 0
   max_frames: 0
-  key_mask_dir: /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline/projects/atec_real/data/key_masks/yellow_can_train_01/can_01
+  key_mask_dir: ../data/key_masks/yellow_can_train_01/can_01

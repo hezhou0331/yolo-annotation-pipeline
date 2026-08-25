@@ -37,7 +37,7 @@ Mask mAP50:       0.933
 Mask mAP50-95:    0.737
 ```
 
-最佳权重仅保留在本机：
+最佳权重不进入 Git 历史，通过 GitHub Release 作为可选附件提供：
 
 ```text
 runs/segment/atec_4class_baseline_20260824/weights/best.pt
@@ -48,7 +48,7 @@ runs/segment/atec_4class_baseline_20260824/weights/best.pt
 ## 最快开始
 
 ```bash
-cd /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline
+cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-app
 ```
 
@@ -62,20 +62,36 @@ App 保持“薄 App”：负责类别选择、场次管理、后台命令和日
 - 严格验证、训练结果发现；
 - 使用真实 `best.pt` 启动外接 `/dev/video0` 或 Orbbec RGB 实时识别。
 
+## 队友首次使用（Private 仓库）
+
+仓库所有者先在 GitHub 仓库的 `Settings → Collaborators` 中添加队友。队友接受邀请后执行：
+
+```bash
+gh auth login
+git clone https://github.com/hezhou0331/yolo-annotation-pipeline.git
+cd yolo-annotation-pipeline
+./scripts/download_atec_data.sh
+./scripts/atec-app
+```
+
+`gh auth login` 必须登录已经获得本私有仓库权限的 GitHub 账号。环境安装与相机配置见
+[环境配置](docs/zh-CN/环境配置.md)，日常采集、关键帧标记、传播和 Review 见
+[App 使用手册](docs/zh-CN/App使用手册.md)。
+
 ## 外接摄像头启动 YOLO 实时识别
 
 最短命令（默认使用四类训练结果、`/dev/video0`、`conf=0.25`）：
 
 ```bash
-cd /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline
+cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-live-yolo
 ```
 
 完整命令：
 
 ```bash
-cd /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline
-/home/hezhou/miniforge3/envs/yolo11/bin/python \
+cd /path/to/YOLO_Annotation_Pipeline
+~/miniforge3/envs/yolo11/bin/python \
   tools/live_yolo11_seg.py \
   --model runs/segment/atec_4class_baseline_20260824/weights/best.pt \
   --source 0 \
@@ -96,6 +112,25 @@ projects/atec_real/datasets/   导出的 YOLO11-seg 数据集
 两者职责不同，禁止因为名称相近而删除。采集先写入 `data/.staging/<session>/`，确认保存后才移动到 `data/scenes/<class>/<session>/`。
 
 真实数据、数据集、训练输出、模型、`xcx/` 和 `third_party/` 默认由 `.gitignore` 排除，不进入 Git。
+
+### 可选下载真实数据
+
+私有 Git 仓库只保存代码、配置、Manifest 和文档；大体积数据不进入 Git 历史。获得仓库权限的队友需要复现当前采集、Mask Review 或直接使用已导出的
+YOLO11-seg 数据集时，可在克隆仓库并完成 `gh auth login` 后运行：
+
+```bash
+./scripts/download_atec_data.sh
+```
+
+脚本从 GitHub Release 下载 `data-20260824` 的两个分卷，自动合并并校验 SHA-256，然后恢复：
+
+```text
+projects/atec_real/data/
+projects/atec_real/datasets/
+```
+
+为避免覆盖本地采集，已有非空数据目录时脚本会停止；确认需要合并时才使用
+`./scripts/download_atec_data.sh --force`。团队快照保留原始 RGB-D 图像和标注内容，只把影响跨机器使用的仓库绝对路径改为相对路径；本机原始数据不会被修改。
 
 ## 技术边界
 

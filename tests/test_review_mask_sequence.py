@@ -14,7 +14,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from atec_pipeline.review_state import ReviewState
-from review_mask_sequence import KEY_ACTIONS, PlayerModel, render_review_frame
+from review_mask_sequence import (
+    KEY_ACTIONS,
+    PlayerModel,
+    build_batch_rerun_action,
+    build_rerun_action,
+    render_review_frame,
+)
 
 
 def main() -> int:
@@ -62,6 +68,57 @@ def main() -> int:
         assert player.advance_for_playback() == "000005"
         assert player.advance_for_playback() == "000005"
         assert not player.playing, "playback pauses at the selected segment boundary"
+
+        resumed = PlayerModel(state, selected_segment_ids=("1",), start_frame_id="000004")
+        assert resumed.current_frame_id == "000004"
+
+        state.set_status("000005", "accepted")
+        action = build_rerun_action(
+            state,
+            frame_id="000003",
+            key_mask=scene / "key_masks/can_01/000003.png",
+            selected_segment_ids=("1",),
+        )
+        assert action == {
+            "action": "rerun_range",
+            "instance_id": "can_01",
+            "segment_id": "1",
+            "start_frame": "000003",
+            "end_before_frame": "000005",
+            "last_frame": "000004",
+            "boundary_reason": "next_accepted",
+            "resume_frame": "000003",
+            "selected_segments": ["1"],
+            "key_mask": str(scene / "key_masks/can_01/000003.png"),
+        }
+
+        # Multiple K edits stay queued inside one Review session.  They are
+        # emitted as one batch action only when the player closes, so the App
+        # starts one background optimization instead of one task per keyframe.
+        key_mask_dir = scene / "key_masks/can_01"
+        first_key = key_mask_dir / "000003.png"
+        second_key = key_mask_dir / "000004.png"
+        first_key.parent.mkdir(parents=True, exist_ok=True)
+        first_key.write_bytes(b"key-a")
+        second_key.write_bytes(b"key-b")
+        player.queue_keyframe("000003", first_key)
+        player.queue_keyframe("000004", second_key)
+        assert tuple(player.pending_keyframes) == ("000003", "000004")
+        assert state.effective_status("000003") == "accepted"
+        assert state.effective_status("000004") == "accepted"
+        batch = build_batch_rerun_action(
+            state,
+            player.pending_keyframes,
+            selected_segment_ids=("1",),
+            resume_frame="000004",
+        )
+        assert batch["action"] == "rerun_ranges"
+        assert batch["instance_id"] == "can_01"
+        assert batch["selected_segments"] == ["1"]
+        assert batch["resume_frame"] == "000004"
+        assert [item["start_frame"] for item in batch["ranges"]] == ["000003", "000004"]
+        assert batch["ranges"][0]["end_before_frame"] == "000004"
+        assert batch["ranges"][1]["end_before_frame"] == "000005"
 
         rendered, buttons = render_review_frame(
             cv2.imread(str(rgb_dir / "000004.png")),

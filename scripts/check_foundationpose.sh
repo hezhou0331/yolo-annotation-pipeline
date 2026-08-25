@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MAMBA="${MAMBA:-/home/hezhou/miniforge3/bin/mamba}"
+MAMBA="${MAMBA:-$HOME/miniforge3/bin/mamba}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 echo "[1/3] NVIDIA GPU"

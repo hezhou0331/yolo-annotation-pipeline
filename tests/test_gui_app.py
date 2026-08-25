@@ -2,6 +2,7 @@
 """Offscreen smoke tests for the thin PyQt5 coordinator; no camera is started."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -26,7 +27,7 @@ def main() -> int:
         assert window.batch.value() == 4
         assert window.device.text() == "0"
         assert window.init_mode.currentText() == "baseline"
-        assert window.experiment.text() == "atec_4class_baseline_20260824"
+        assert window.experiment.text() == "atec_4class_baseline_moredata_20260824"
 
         # Daily operation is one thin page, not three workflow tabs.
         assert not isinstance(window.centralWidget(), QTabWidget)
@@ -130,6 +131,12 @@ def main() -> int:
         assert not any("watermelon_filter_complete" in text for text in can_texts)
         assert "── 未标记完成（1）──" in can_texts
         assert "── 已标记完成（1）──" in can_texts
+        assert "场次 2" in window.class_frame_summary.text()
+        assert "RGB-D 总帧 2" in window.class_frame_summary.text()
+        assert "已处理 1" in window.class_frame_summary.text()
+        assert "accepted 0" in window.class_frame_summary.text()
+        assert "rejected 1" in window.class_frame_summary.text()
+        assert "待人工标记 1 场" in window.class_frame_summary.text()
         failed_item = next(
             window.scene_list.item(index)
             for index in range(window.scene_list.count())
@@ -147,6 +154,9 @@ def main() -> int:
         assert "── 未标记完成（0）──" in watermelon_texts
         assert "暂无未标记完成的场次" in watermelon_texts
         assert "── 已标记完成（1）──" in watermelon_texts
+        assert "场次 1" in window.class_frame_summary.text()
+        assert "RGB-D 总帧 1" in window.class_frame_summary.text()
+        assert "待 SAM2 传播 1 场" in window.class_frame_summary.text()
 
         watermelon_item = next(
             window.scene_list.item(index)
@@ -309,7 +319,7 @@ def main() -> int:
             "project:\n"
             f"  scene: {window.session.scene_dir}\n"
             f"  output: {dataset_yaml.parent}\n"
-            "  sam2_python: /home/hezhou/miniforge3/envs/yolo11/bin/python\n"
+            "  sam2_python: ~/miniforge3/envs/yolo11/bin/python\n"
             "  split: train\n"
             "instances:\n"
             "- instance_id: can_01\n"
@@ -328,6 +338,7 @@ def main() -> int:
         assert len(contexts) == 1 and contexts[0]["instance_id"] == "can_01"
         review_program, review_args = window.command_for_review(contexts[0], ("0",))
         assert review_program.endswith("envs/yolo11/bin/python")
+        assert not review_program.startswith("~"), "portable home paths must be expanded before QProcess launch"
         assert "review_mask_sequence.py" in review_args[0]
         assert str(quality_report) in review_args
         assert "--segments" in review_args and review_args[review_args.index("--segments") + 1] == "0"
@@ -335,14 +346,49 @@ def main() -> int:
         assert window._review_action_file is not None
         window._review_action_file.parent.mkdir(parents=True, exist_ok=True)
         window._review_action_file.write_text('{"action": "review_changed"}', encoding="utf-8")
-        reruns: list[str] = []
-        original_run_pipeline = window.run_pipeline
-        window.run_pipeline = lambda: reruns.append("run")  # type: ignore[method-assign]
+        review_tasks: list[tuple[str, str, list[str]]] = []
+        original_start_task = window._start_task
+        window._start_task = lambda kind, program, args: review_tasks.append((kind, program, list(args)))  # type: ignore[method-assign]
         window.task_kind = "review"
         window._process_finished(0, QProcess.NormalExit)
         app.processEvents()
-        assert reruns == ["run"], "manual review changes must trigger a fresh export"
-        window.run_pipeline = original_run_pipeline  # type: ignore[method-assign]
+        assert len(review_tasks) == 1
+        kind, program, args = review_tasks.pop()
+        assert kind == "review_export"
+        assert program.endswith("scripts/atec-pipeline")
+        assert args[:2] == ["annotate", str(manifest)]
+        assert "--skip-tracking" in args
+        assert "run" not in args, "A/R/X changes must never rerun full SAM2"
+
+        batch_action = {
+            "action": "rerun_ranges",
+            "instance_id": "can_01",
+            "ranges": [
+                {
+                    "segment_id": "0",
+                    "start_frame": "000000",
+                    "end_before_frame": None,
+                    "last_frame": "000000",
+                    "boundary_reason": "segment_end",
+                    "key_mask": str(mask_path),
+                }
+            ],
+            "selected_segments": ["0"],
+            "resume_frame": "000000",
+        }
+        window._review_action_file.write_text(json.dumps(batch_action), encoding="utf-8")
+        window.task_kind = "review"
+        window._process_finished(0, QProcess.NormalExit)
+        app.processEvents()
+        assert len(review_tasks) == 1
+        kind, program, args = review_tasks.pop()
+        assert kind == "review_rerun"
+        assert program.endswith("scripts/atec-pipeline")
+        assert args[:2] == ["rerun-range", str(manifest)]
+        assert args[args.index("--instance-id") + 1] == "can_01"
+        assert args[args.index("--ranges-file") + 1] == str(window._review_action_file)
+        assert "run" not in args, "closing Review must start one local batch, not the full pipeline"
+        window._start_task = original_start_task  # type: ignore[method-assign]
 
         # Training result metrics are visible without reading the terminal log.
         run_dir = ROOT / "runs/segment" / window.experiment.text()

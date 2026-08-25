@@ -51,6 +51,7 @@ from .gui_state import (
     paired_rgbd_frame_count,
     repair_scene_integrity,
     scene_workflow_state,
+    summarize_scene_states,
     write_session_metadata,
 )
 from tools.split_dataset_by_scene import apply_plan, build_auto_plan
@@ -172,7 +173,7 @@ class AtecMainWindow(QMainWindow):
     def command_for_review(self, context: dict, segment_ids: tuple[str, ...] = ()) -> tuple[str, list[str]]:
         action_file = self._require_session().scene_dir / "project_reports" / "manual_mask_review" / "player_action.json"
         self._review_action_file = action_file
-        python = str(context.get("python") or "/home/hezhou/miniforge3/envs/yolo11/bin/python")
+        python = str(Path(context.get("python") or os.environ.get("ATEC_YOLO_PYTHON", "~/miniforge3/envs/yolo11/bin/python")).expanduser())
         args = [
             str(ROOT / "tools" / "review_mask_sequence.py"),
             "--scene", str(context["scene"]),
@@ -188,6 +189,26 @@ class AtecMainWindow(QMainWindow):
         if segment_ids:
             args.extend(["--segments", ",".join(segment_ids)])
         return python, args
+
+    def command_for_review_export(self) -> tuple[str, list[str]]:
+        return str(ROOT / "scripts" / "atec-pipeline"), [
+            "annotate", str(self._require_manifest()), "--skip-tracking",
+        ]
+
+    def command_for_review_rerun(self, action: dict) -> tuple[str, list[str]]:
+        instance_id = str(action.get("instance_id") or "").strip()
+        ranges = action.get("ranges")
+        if not instance_id:
+            raise ValueError("Review动作缺少instance_id")
+        if action.get("action") == "rerun_ranges" and (not isinstance(ranges, list) or not ranges):
+            raise ValueError("Review动作没有待处理的局部范围")
+        if self._review_action_file is None or not self._review_action_file.is_file():
+            raise FileNotFoundError("Review局部传播动作文件不存在")
+        return str(ROOT / "scripts" / "atec-pipeline"), [
+            "rerun-range", str(self._require_manifest()),
+            "--instance-id", instance_id,
+            "--ranges-file", str(self._review_action_file),
+        ]
 
     # ---------- one-page UI ----------
     def _build_ui(self) -> None:
@@ -335,6 +356,13 @@ class AtecMainWindow(QMainWindow):
         group = QGroupBox("已保存场次（单击可继续标记）")
         self.saved_scenes_group = group
         layout = QVBoxLayout(group)
+        self.class_frame_summary = QLabel("当前物品数据概览：请先选择物品。")
+        self.class_frame_summary.setObjectName("classFrameSummary")
+        self.class_frame_summary.setWordWrap(True)
+        self.class_frame_summary.setStyleSheet(
+            "background:#eef6ff; padding:8px; border:1px solid #9ec5e8; font-weight:600;"
+        )
+        layout.addWidget(self.class_frame_summary)
         self.scene_list = QListWidget()
         self.scene_list.setObjectName("sceneList")
         self.scene_list.setMinimumHeight(180)
@@ -386,7 +414,7 @@ class AtecMainWindow(QMainWindow):
         self.batch.setRange(1, 512)
         self.batch.setValue(4)
         self.device = QLineEdit("0")
-        self.experiment = QLineEdit("atec_4class_baseline_20260824")
+        self.experiment = QLineEdit("atec_4class_baseline_moredata_20260824")
         form.addRow("数据集", self.dataset_label)
         form.addRow("初始化", self.init_mode)
         form.addRow("epochs", self.epochs)
@@ -518,7 +546,7 @@ class AtecMainWindow(QMainWindow):
         )
         if weights is None or not weights.is_file():
             raise FileNotFoundError("尚未发现真实训练生成的 best.pt；不会使用官方基础权重冒充。")
-        python = Path("/home/hezhou/miniforge3/envs/yolo11/bin/python")
+        python = Path(os.environ.get("ATEC_YOLO_PYTHON", "~/miniforge3/envs/yolo11/bin/python")).expanduser()
         if not python.is_file():
             raise FileNotFoundError(f"YOLO11 Python环境不存在: {python}")
 
@@ -529,7 +557,7 @@ class AtecMainWindow(QMainWindow):
             "--device", self.device.text().strip() or "0",
         ]
         if self.live_source_kind.currentData() == "orbbec":
-            orbbec_python = Path("/home/hezhou/miniforge3/envs/orbbec/bin/python")
+            orbbec_python = Path(os.environ.get("ATEC_ORBBEC_PYTHON", "~/miniforge3/envs/orbbec/bin/python")).expanduser()
             if not orbbec_python.is_file():
                 raise FileNotFoundError(f"Orbbec Python环境不存在: {orbbec_python}")
             return str(python), [
@@ -753,7 +781,7 @@ class AtecMainWindow(QMainWindow):
             if item.get("instance_id")
         }
         scene = self._manifest_path(project.get("scene", self.session.scene_dir), manifest_path.parent)
-        python = str(project.get("sam2_python") or "/home/hezhou/miniforge3/envs/yolo11/bin/python")
+        python = str(Path(project.get("sam2_python") or "~/miniforge3/envs/yolo11/bin/python").expanduser())
         split = str(export.get("split") or project.get("split") or self.session.split)
         contexts: list[dict] = []
         for item in export.get("instances") or []:
@@ -857,6 +885,18 @@ class AtecMainWindow(QMainWindow):
                         self._append_log(f"[场次状态] {scene.name}: {exc}")
         else:
             self.saved_scenes_group.setTitle("已保存场次（请先选择物品）")
+
+        summary = summarize_scene_states(states)
+        if selected is None:
+            self.class_frame_summary.setText("当前物品数据概览：请先选择物品。")
+        else:
+            self.class_frame_summary.setText(
+                f"当前物品数据概览：场次 {summary.scene_count} | RGB-D 总帧 {summary.paired_frames} | "
+                f"已处理 {summary.processed_frames}（accepted {summary.accepted} / "
+                f"review {summary.review} / rejected {summary.rejected}） | "
+                f"待 SAM2 传播 {summary.pending_propagation_scenes} 场 | "
+                f"待人工标记 {summary.needs_manual_scenes} 场"
+            )
 
         groups = (
             ("needs_manual", "未标记完成"),
@@ -1140,12 +1180,48 @@ class AtecMainWindow(QMainWindow):
                     action = json.loads(self._review_action_file.read_text(encoding="utf-8"))
                 except (OSError, ValueError, TypeError):
                     action = {}
-            if succeeded and action.get("action") in {"rerun", "review_changed"}:
+            if succeeded and action.get("action") in {"rerun_ranges", "rerun_range"}:
                 self.validation_passed = False
-                self._append_log("[Review] 人工状态或关键帧已更新，开始重新传播/导出，旧验证结果已失效。")
-                QTimer.singleShot(0, self.run_pipeline)
+                try:
+                    command = self.command_for_review_rerun(action)
+                except Exception as exc:
+                    self._append_log(f"[Review/失败] 无法启动局部传播：{exc}")
+                    QMessageBox.warning(self, "无法局部传播", str(exc))
+                    return
+                count = len(action.get("ranges") or [action])
+                self._append_log(
+                    f"[Review] 已关闭检查窗口；本次新增 {count} 个关键帧范围，"
+                    "现在统一执行一次局部SAM2传播和YOLO刷新。旧验证结果已失效。"
+                )
+                QTimer.singleShot(0, lambda command=command: self._start_task("review_rerun", *command))
+            elif succeeded and action.get("action") == "review_changed":
+                self.validation_passed = False
+                try:
+                    command = self.command_for_review_export()
+                except Exception as exc:
+                    self._append_log(f"[Review/失败] 无法重新导出：{exc}")
+                    QMessageBox.warning(self, "无法重新导出", str(exc))
+                    return
+                self._append_log(
+                    "[Review] A/R/X人工状态已更新；只重新执行质量检查和YOLO聚合，"
+                    "不会重跑SAM2。旧验证结果已失效。"
+                )
+                QTimer.singleShot(0, lambda command=command: self._start_task("review_export", *command))
             elif succeeded:
                 self._append_log("[Review] 检查结束；没有检测到人工修改。")
+            return
+        if kind == "review_rerun":
+            if succeeded:
+                self._append_log("[Review] 本次批量局部传播和YOLO刷新已完成；可再次打开检查效果。")
+            else:
+                self._append_log("[Review/失败] 局部传播未完成；工具不会自动回退为整场重跑，请查看上方根因。")
+                QMessageBox.warning(self, "局部传播失败", "旧结果已尽量保留；请查看日志中的准确失败原因。")
+            return
+        if kind == "review_export":
+            if succeeded:
+                self._append_log("[Review] 人工A/R/X状态已重新聚合到YOLO数据。")
+            else:
+                QMessageBox.warning(self, "重新导出失败", "SAM2 Mask未重跑；请查看日志中的准确失败原因。")
             return
         if kind == "mask":
             if succeeded:
@@ -1310,7 +1386,10 @@ class AtecMainWindow(QMainWindow):
             program, args = self.command_for_review(context, segment_ids)
             if self._review_action_file and self._review_action_file.exists():
                 self._review_action_file.unlink()
-            self._append_log("[Review] 空格播放/暂停，左右逐帧，A/R/X修改状态，K增加关键帧。")
+            self._append_log(
+                "[Review] 空格播放/暂停，左右逐帧，A/R/X修改状态；"
+                "K可连续增加关键帧，保存后继续检查，关闭Review时才统一局部传播。"
+            )
             self._start_task("review", program, args)
         except Exception as exc:
             QMessageBox.warning(self, "无法检查标注效果", str(exc))

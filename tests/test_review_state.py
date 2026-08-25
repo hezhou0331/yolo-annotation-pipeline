@@ -59,6 +59,35 @@ def main() -> int:
         assert state.effective_status("000004") == "review"
         assert state.reason_text("000004") == "touches_image_border"
 
+        # Incremental SAM2 reruns start at the new keyframe and stop before the
+        # next effective accepted frame in the same automatic segment.
+        immediate = state.incremental_rerun_range("000001")
+        assert immediate.frame_ids == ("000001",)
+        assert immediate.end_before_frame == "000002"
+        assert immediate.boundary_reason == "next_accepted"
+
+        # A manual rejection overrides an automatic accepted status, so that
+        # frame cannot prematurely terminate the correction range.
+        state.set_status("000002", "rejected")
+        overridden = state.incremental_rerun_range("000001")
+        assert overridden.frame_ids == ("000001", "000002", "000003")
+        assert overridden.end_before_frame == "000004"
+        assert overridden.last_frame == "000003"
+        assert overridden.boundary_reason == "segment_end"
+
+        # A manually accepted frame is also a valid exclusive boundary.
+        state.set_status("000005", "accepted")
+        manual_boundary = state.incremental_rerun_range("000004")
+        assert manual_boundary.frame_ids == ("000004",)
+        assert manual_boundary.end_before_frame == "000005"
+        assert manual_boundary.boundary_reason == "next_accepted"
+
+        # The last frame of a segment never leaks into the next segment.
+        final_in_segment = state.incremental_rerun_range("000003")
+        assert final_in_segment.frame_ids == ("000003",)
+        assert final_in_segment.end_before_frame == "000004"
+        assert final_in_segment.segment_id == "0"
+
         state.set_status("000004", "rejected")
         assert state.effective_status("000004") == "rejected"
         assert state.auto_status("000004") == "review"

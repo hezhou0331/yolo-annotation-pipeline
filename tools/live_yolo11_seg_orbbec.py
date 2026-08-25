@@ -21,7 +21,7 @@ except ImportError:  # Direct script execution.
     from live_yolo11_seg import class_name_summary
     from orbbec_stream_protocol import recv_packet
 
-DEFAULT_ORBBEC_PYTHON = Path("/home/hezhou/miniforge3/envs/orbbec/bin/python")
+DEFAULT_ORBBEC_PYTHON = Path("~/miniforge3/envs/orbbec/bin/python").expanduser()
 
 
 def build_stream_command(

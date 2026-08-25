@@ -24,6 +24,18 @@ class ReviewSegment:
     frame_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class IncrementalRerunRange:
+    """A SAM2 correction range capped inside one automatic segment."""
+
+    segment_id: str
+    frame_ids: tuple[str, ...]
+    start_frame: str
+    last_frame: str
+    end_before_frame: str | None
+    boundary_reason: str
+
+
 class ReviewState:
     def __init__(
         self,
@@ -132,6 +144,45 @@ class ReviewState:
             if frame_id in segment.frame_ids:
                 return segment
         raise KeyError(f"帧不属于任何分段：{frame_id}")
+
+    def incremental_rerun_range(self, frame_id: str) -> IncrementalRerunRange:
+        """Return ``frame_id`` through the next effective accepted boundary.
+
+        The accepted boundary is exclusive.  Manual decisions are included via
+        :meth:`effective_status`, so a manual review/rejection overrides an
+        automatic acceptance.  If there is no accepted frame later in the same
+        segment, the range ends at that segment's final frame and exposes the
+        next segment's first frame as an exclusive command boundary.
+        """
+        segment = self.segment_for_frame(frame_id)
+        start_index = segment.frame_ids.index(frame_id)
+        end_before_frame: str | None = None
+        boundary_reason = "segment_end"
+        selected = segment.frame_ids[start_index:]
+        for candidate_index in range(start_index + 1, len(segment.frame_ids)):
+            candidate = segment.frame_ids[candidate_index]
+            if self.effective_status(candidate) == "accepted":
+                selected = segment.frame_ids[start_index:candidate_index]
+                end_before_frame = candidate
+                boundary_reason = "next_accepted"
+                break
+        else:
+            segment_index = self.segments.index(segment)
+            if segment_index + 1 < len(self.segments):
+                end_before_frame = self.segments[segment_index + 1].frame_ids[0]
+
+        if not selected:
+            # The search begins after frame_id, so this is defensive rather
+            # than expected.  A local rerun always contains its keyframe.
+            selected = (frame_id,)
+        return IncrementalRerunRange(
+            segment_id=segment.segment_id,
+            frame_ids=tuple(selected),
+            start_frame=frame_id,
+            last_frame=selected[-1],
+            end_before_frame=end_before_frame,
+            boundary_reason=boundary_reason,
+        )
 
     def begin_problem_range(self, frame_id: str) -> None:
         if frame_id not in self.records:

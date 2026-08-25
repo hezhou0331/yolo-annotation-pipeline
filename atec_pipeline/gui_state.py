@@ -116,6 +116,38 @@ class SceneWorkflowState:
 
 
 @dataclass(frozen=True)
+class ClassWorkflowSummary:
+    """Aggregated frame and workflow counts for the currently selected class."""
+
+    scene_count: int
+    paired_frames: int
+    processed_frames: int
+    accepted: int
+    review: int
+    rejected: int
+    pending_propagation_scenes: int
+    needs_manual_scenes: int
+
+
+def summarize_scene_states(states: Iterable[SceneWorkflowState]) -> ClassWorkflowSummary:
+    """Summarize scene-derived counts without reading the filesystem again."""
+    scene_states = tuple(states)
+    accepted = sum(state.accepted for state in scene_states)
+    review = sum(state.review for state in scene_states)
+    rejected = sum(state.rejected for state in scene_states)
+    return ClassWorkflowSummary(
+        scene_count=len(scene_states),
+        paired_frames=sum(state.paired_frames for state in scene_states),
+        processed_frames=accepted + review + rejected,
+        accepted=accepted,
+        review=review,
+        rejected=rejected,
+        pending_propagation_scenes=sum(state.code == "pending_export" for state in scene_states),
+        needs_manual_scenes=sum(state.group == "needs_manual" for state in scene_states),
+    )
+
+
+@dataclass(frozen=True)
 class SceneIntegrityReport:
     """Filesystem/metadata consistency for one RGB-D scene.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MAMBA="${MAMBA:-/home/hezhou/miniforge3/bin/mamba}"
+MAMBA="${MAMBA:-$HOME/miniforge3/bin/mamba}"
 OUTPUT="${1:-$ROOT/projects/atec_real/data/scenes/capture_001}"
 if [[ $# -gt 0 ]]; then shift; fi
 OUTPUT="$(realpath -m -- "$OUTPUT")"

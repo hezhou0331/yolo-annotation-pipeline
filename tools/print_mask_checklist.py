@@ -11,7 +11,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description="输出每段缺失关键mask的绘制清单")
     parser.add_argument("--segments", type=Path, required=True)
-    parser.add_argument("--python", default="/home/hezhou/miniforge3/envs/foundationpose/bin/python")
+    parser.add_argument("--python", default=str(Path.home() / "miniforge3/envs/foundationpose/bin/python"))
     args = parser.parse_args()
     path = args.segments.expanduser().resolve()
     report = json.loads(path.read_text(encoding="utf-8"))

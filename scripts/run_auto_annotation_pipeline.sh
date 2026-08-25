@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FP_PY="${FP_PY:-/home/hezhou/miniforge3/envs/foundationpose/bin/python}"
+FP_PY="${FP_PY:-$HOME/miniforge3/envs/foundationpose/bin/python}"
 
 usage() {
   echo "用法: $0 <project.yaml> [--allow-missing-key-masks] [--dry-run]" >&2

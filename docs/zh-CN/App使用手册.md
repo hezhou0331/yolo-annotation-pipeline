@@ -5,7 +5,7 @@
 ## 1. 启动
 
 ```bash
-cd /home/hezhou/桌面/ATEC/YOLO_Annotation_Pipeline
+cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-app
 ```
 

@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from atec_pipeline.gui_state import (  # noqa: E402
+    SceneWorkflowState,
     discard_failed_empty_capture,
     find_best_weights,
     has_paired_rgbd_frames,
@@ -27,6 +28,7 @@ from atec_pipeline.gui_state import (  # noqa: E402
     repair_scene_integrity,
     scene_workflow_state,
     scene_for_number,
+    summarize_scene_states,
 )
 
 
@@ -37,6 +39,73 @@ def main() -> int:
     assert classes[6].name == "red_bin" and classes[6].class_id == 6
     assert scene_for_number(classes, 1).name == "can"
     assert scene_for_number(classes, 7).name == "red_bin"
+
+    summary_states = [
+        SceneWorkflowState(
+            scene_name="can_waiting",
+            class_name="can",
+            scene_dir=Path("/tmp/can_waiting"),
+            split="train",
+            manifest_path=None,
+            segments_path=Path("/tmp/can_waiting/segments.json"),
+            export_report_path=None,
+            rgb_frames=77,
+            depth_frames=77,
+            paired_frames=77,
+            mask_completed=1,
+            mask_total=1,
+            group="keyframes_complete",
+            code="pending_export",
+            color="blue",
+            detail="待 SAM2 传播",
+        ),
+        SceneWorkflowState(
+            scene_name="can_ready",
+            class_name="can",
+            scene_dir=Path("/tmp/can_ready"),
+            split="train",
+            manifest_path=None,
+            segments_path=Path("/tmp/can_ready/segments.json"),
+            export_report_path=Path("/tmp/can_ready/report.json"),
+            rgb_frames=90,
+            depth_frames=90,
+            paired_frames=90,
+            mask_completed=1,
+            mask_total=1,
+            group="keyframes_complete",
+            code="export_needs_review",
+            color="yellow",
+            detail="部分帧待检查",
+            accepted=53,
+            review=7,
+            rejected=30,
+        ),
+        SceneWorkflowState(
+            scene_name="can_manual",
+            class_name="can",
+            scene_dir=Path("/tmp/can_manual"),
+            split="train",
+            manifest_path=None,
+            segments_path=Path("/tmp/can_manual/segments.json"),
+            export_report_path=None,
+            rgb_frames=20,
+            depth_frames=20,
+            paired_frames=20,
+            mask_completed=0,
+            mask_total=1,
+            group="needs_manual",
+            code="masks_missing",
+            color="gray",
+            detail="缺少关键帧",
+        ),
+    ]
+    class_summary = summarize_scene_states(summary_states)
+    assert class_summary.scene_count == 3
+    assert class_summary.paired_frames == 187
+    assert class_summary.processed_frames == 90
+    assert (class_summary.accepted, class_summary.review, class_summary.rejected) == (53, 7, 30)
+    assert class_summary.pending_propagation_scenes == 1
+    assert class_summary.needs_manual_scenes == 1
 
     with tempfile.TemporaryDirectory(prefix="atec_gui_state_") as tmp:
         project_root = Path(tmp) / "project"

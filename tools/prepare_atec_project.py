@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
@@ -51,6 +52,11 @@ def main():
     manifest_path = root / "manifests" / f"{args.scene_name}_{args.split}.yaml"
     if manifest_path.exists() and not args.force_manifest:
         raise SystemExit(f"manifest已存在，不覆盖：{manifest_path}；如确认覆盖请加--force-manifest")
+    manifest_dir = manifest_path.parent
+
+    def portable(path: Path) -> str:
+        return os.path.relpath(path, manifest_dir)
+
     instances = []
     defaults = []
     object_trackers = {
@@ -77,22 +83,22 @@ def main():
         }
         if tracker == "foundationpose":
             entry.update({
-                "mesh": str(root / "assets" / "meshes" / instance_id / "textured_mesh.obj"),
+                "mesh": portable(root / "assets" / "meshes" / instance_id / "textured_mesh.obj"),
                 "mesh_unit": "m",
-                "registration_mask_dir": str(root / "data" / "key_masks" / args.scene_name / instance_id),
+                "registration_mask_dir": portable(root / "data" / "key_masks" / args.scene_name / instance_id),
             })
         elif tracker == "sam2":
-            entry["key_mask_dir"] = str(root / "data" / "key_masks" / args.scene_name / instance_id)
+            entry["key_mask_dir"] = portable(root / "data" / "key_masks" / args.scene_name / instance_id)
         else:
-            entry["mask_dir"] = str(root / "data" / "tracked_masks" / args.scene_name / instance_id)
+            entry["mask_dir"] = portable(root / "data" / "tracked_masks" / args.scene_name / instance_id)
         instances.append(entry)
     manifest = {
         "classes": CLASSES,
         "project": {
-            "scene": str(scene), "output": str(root / "datasets" / "atec_yolo11_seg"),
-            "foundationpose_dir": str(ROOT / "third_party/FoundationPose"),
-            "sam2_python": str(Path.home() / "miniforge3/envs/yolo11/bin/python"),
-            "sam2_model": str(ROOT / "models/sam2.1_t.pt"), "sam2_device": 0, "sam2_imgsz": 640,
+            "scene": portable(scene), "output": portable(root / "datasets" / "atec_yolo11_seg"),
+            "foundationpose_dir": portable(ROOT / "third_party/FoundationPose"),
+            "sam2_python": "~/miniforge3/envs/yolo11/bin/python",
+            "sam2_model": portable(ROOT / "models/sam2.1_t.pt"), "sam2_device": 0, "sam2_imgsz": 640,
             "sam2_memory_update_interval": 5,
             "sam2_auto_reregister": True, "sam2_auto_reregister_after_failures": 1,
             "sam2_min_recovery_seed_iou": 0.35, "sam2_max_flow_shift_norm": 0.35,

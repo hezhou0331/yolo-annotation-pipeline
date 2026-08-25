@@ -7,7 +7,7 @@ classes:
   5: green_bin
   6: red_bin
 project:
-  scene: ../data/scenes/red_paper_bag/red_paper_bag_20260824_1150_02
+  scene: ../data/scenes/meal_box/meal_box_20260824_1633_02
   output: ../datasets/atec_yolo11_seg
   foundationpose_dir: ../../../third_party/FoundationPose
   sam2_python: ~/miniforge3/envs/yolo11/bin/python
@@ -19,10 +19,10 @@ project:
   sam2_auto_reregister_after_failures: 1
   sam2_min_recovery_seed_iou: 0.35
   sam2_max_flow_shift_norm: 0.35
-  split: val
-  capture_session_id: session_red_paper_bag_20260824_1150_02
-  source_video_id: red_paper_bag_20260824_1150_02_clip_01
-  name_prefix: red_paper_bag_20260824_1150_02_
+  split: train
+  capture_session_id: session_meal_box_20260824_1633_02
+  source_video_id: meal_box_20260824_1633_02_clip_01
+  name_prefix: meal_box_20260824_1633_02_
   image_mode: hardlink
   inference_max_side: 640
   max_consecutive_rejects: 3
@@ -52,10 +52,10 @@ project:
     max_center_shift_norm: 0.4
     min_dominant_component_ratio: 0.7
 instances:
-- instance_id: red_paper_bag_01
-  class_id: 3
-  class_name: red_paper_bag
+- instance_id: meal_box_01
+  class_id: 2
+  class_name: meal_box
   tracker: sam2
   start: 0
   max_frames: 0
-  key_mask_dir: ../data/key_masks/red_paper_bag_20260824_1150_02/red_paper_bag_01
+  key_mask_dir: ../data/key_masks/meal_box_20260824_1633_02/meal_box_01

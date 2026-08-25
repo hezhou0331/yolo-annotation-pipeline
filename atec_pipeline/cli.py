@@ -193,6 +193,23 @@ def annotate(args: argparse.Namespace) -> int:
     return run(cmd)
 
 
+def rerun_range(args: argparse.Namespace) -> int:
+    cmd: list[str | Path] = [
+        interpreters()["foundationpose"],
+        ROOT / "tools" / "rerun_sam2_range.py",
+        "--manifest", args.manifest,
+        "--instance-id", args.instance_id,
+    ]
+    if args.ranges_file:
+        cmd.extend(["--ranges-file", args.ranges_file])
+    else:
+        cmd.extend(["--start-frame", args.start_frame])
+        if args.end_before_frame:
+            cmd.extend(["--end-before-frame", args.end_before_frame])
+    add_bool_flag(cmd, args.dry_run, "--dry-run")
+    return run(cmd)
+
+
 def full_run(args: argparse.Namespace) -> int:
     cmd = [ROOT / "scripts/run_auto_annotation_pipeline.sh", args.manifest]
     if args.allow_missing_key_masks:
@@ -334,6 +351,16 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("manifest", type=Path); x.add_argument("--skip-tracking", action="store_true")
     x.add_argument("--dry-run", action="store_true"); x.add_argument("--include-review", action="store_true")
     x.add_argument("--keep-conflicts", action="store_true"); x.set_defaults(func=annotate)
+
+    x = sub.add_parser("rerun-range", help="从新关键帧开始局部重跑SAM2；支持Review批量区间文件")
+    x.add_argument("manifest", type=Path)
+    x.add_argument("--instance-id", required=True)
+    source = x.add_mutually_exclusive_group(required=True)
+    source.add_argument("--start-frame")
+    source.add_argument("--ranges-file", type=Path)
+    x.add_argument("--end-before-frame")
+    x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(func=rerun_range)
 
     x = sub.add_parser("run", help="执行分段检查和完整自动标注")
     x.add_argument("manifest", type=Path); x.add_argument("--allow-missing-key-masks", action="store_true")

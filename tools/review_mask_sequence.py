@@ -50,7 +50,12 @@ class ClickButton:
 
 
 class PlayerModel:
-    def __init__(self, state: ReviewState, selected_segment_ids: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        state: ReviewState,
+        selected_segment_ids: Iterable[str] = (),
+        start_frame_id: str | None = None,
+    ) -> None:
         self.state = state
         selected = {str(value) for value in selected_segment_ids}
         self.selected_segments = tuple(
@@ -61,9 +66,12 @@ class PlayerModel:
         self.playable_frame_ids = tuple(
             frame_id for segment in self.selected_segments for frame_id in segment.frame_ids
         )
-        self.index = 0
+        if start_frame_id is not None and start_frame_id not in self.playable_frame_ids:
+            raise ValueError(f"恢复帧不在所选分段中：{start_frame_id}")
+        self.index = self.playable_frame_ids.index(start_frame_id) if start_frame_id else 0
         self.playing = False
         self.changed = False
+        self.pending_keyframes: dict[str, Path] = {}
         self._boundary_waiting = False
 
     @property
@@ -121,6 +129,15 @@ class PlayerModel:
         self.changed = bool(changed) or self.changed
         return changed
 
+    def queue_keyframe(self, frame_id: str, key_mask: Path) -> None:
+        path = Path(key_mask).expanduser().resolve()
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise ValueError(f"关键 Mask 未保存或为空：{path}")
+        self.state.set_status(frame_id, "accepted", reason="manual_keyframe")
+        self.state.save()
+        self.pending_keyframes[frame_id] = path
+        self.changed = True
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="连续检查 SAM2 Mask 传播效果")
@@ -132,6 +149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--instance-id", required=True)
     parser.add_argument("--key-mask-dir", type=Path, required=True)
     parser.add_argument("--segments", default="", help="逗号分隔的segment_id；留空检查全部")
+    parser.add_argument("--start-frame", help="打开后定位到指定帧")
     parser.add_argument("--action-file", type=Path)
     parser.add_argument("--editor-python", default=sys.executable)
     parser.add_argument("--editor-script", type=Path, default=WORKSPACE / "tools/draw_first_mask.py")
@@ -190,7 +208,7 @@ def render_review_frame(
     y1 = canvas.shape[0] + 112
     y2 = canvas.shape[0] + 145
     first = ClickButton("reject_scene_tail", "Reject all remaining frames", 14, y1, 330, y2)
-    second = ClickButton("add_keyframe", "Add keyframe and rerun", 348, y1, 650, y2)
+    second = ClickButton("add_keyframe", "Add keyframe (run on close)", 348, y1, 700, y2)
     for button in (first, second):
         cv2.rectangle(output, (button.x1, button.y1), (button.x2, button.y2), (75, 75, 75), -1)
         cv2.rectangle(output, (button.x1, button.y1), (button.x2, button.y2), (180, 180, 180), 1)
@@ -208,7 +226,60 @@ def _write_action(path: Path | None, payload: dict) -> None:
     temporary.replace(path)
 
 
-def _add_keyframe(args: argparse.Namespace, state: ReviewState, frame_id: str) -> bool:
+def build_rerun_action(
+    state: ReviewState,
+    *,
+    frame_id: str,
+    key_mask: Path,
+    selected_segment_ids: Iterable[str] = (),
+) -> dict:
+    rerun = state.incremental_rerun_range(frame_id)
+    return {
+        "action": "rerun_range",
+        "instance_id": state.instance_id,
+        "segment_id": rerun.segment_id,
+        "start_frame": rerun.start_frame,
+        "end_before_frame": rerun.end_before_frame,
+        "last_frame": rerun.last_frame,
+        "boundary_reason": rerun.boundary_reason,
+        "resume_frame": frame_id,
+        "selected_segments": [str(value) for value in selected_segment_ids],
+        "key_mask": str(Path(key_mask).expanduser().resolve()),
+    }
+
+
+def build_batch_rerun_action(
+    state: ReviewState,
+    keyframes: dict[str, Path],
+    *,
+    selected_segment_ids: Iterable[str] = (),
+    resume_frame: str | None = None,
+) -> dict:
+    if not keyframes:
+        raise ValueError("没有待局部传播的新关键帧")
+    selected = tuple(str(value) for value in selected_segment_ids)
+    ranges = []
+    for frame_id in sorted(keyframes, key=state.frame_ids.index):
+        item = build_rerun_action(
+            state,
+            frame_id=frame_id,
+            key_mask=keyframes[frame_id],
+            selected_segment_ids=selected,
+        )
+        ranges.append({
+            key: value for key, value in item.items()
+            if key not in {"action", "instance_id", "resume_frame", "selected_segments"}
+        })
+    return {
+        "action": "rerun_ranges",
+        "instance_id": state.instance_id,
+        "ranges": ranges,
+        "resume_frame": resume_frame or ranges[0]["start_frame"],
+        "selected_segments": list(selected),
+    }
+
+
+def _add_keyframe(args: argparse.Namespace, state: ReviewState, frame_id: str) -> Path | None:
     image = args.scene.expanduser().resolve() / "rgb" / f"{frame_id}.png"
     propagated = state.mask_path(frame_id)
     output = state.keyframe_path(args.key_mask_dir, frame_id)
@@ -221,9 +292,8 @@ def _add_keyframe(args: argparse.Namespace, state: ReviewState, frame_id: str) -
         command.extend(["--mask-input", str(propagated)])
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0 or not output.is_file():
-        return False
-    _write_action(args.action_file, {"action": "rerun", "frame_id": frame_id, "key_mask": str(output)})
-    return True
+        return None
+    return output
 
 
 def run_player(args: argparse.Namespace) -> int:
@@ -232,7 +302,7 @@ def run_player(args: argparse.Namespace) -> int:
         args.quality_report, args.review_overrides, args.mask_dir, args.segments_report,
         scene_name=args.scene.name, instance_id=args.instance_id,
     )
-    player = PlayerModel(state, selected)
+    player = PlayerModel(state, selected, start_frame_id=args.start_frame)
     if args.headless:
         return 0
 
@@ -254,7 +324,8 @@ def run_player(args: argparse.Namespace) -> int:
         while True:
             frame_id = player.current_frame_id
             rgb = cv2.imread(str(args.scene / "rgb" / f"{frame_id}.png"), cv2.IMREAD_COLOR)
-            mask = cv2.imread(str(state.mask_path(frame_id)), cv2.IMREAD_GRAYSCALE)
+            display_mask = player.pending_keyframes.get(frame_id, state.mask_path(frame_id))
+            mask = cv2.imread(str(display_mask), cv2.IMREAD_GRAYSCALE)
             segment = player.current_segment
             segment_number = player.selected_segments.index(segment) + 1
             rendered, buttons = render_review_frame(
@@ -296,13 +367,32 @@ def run_player(args: argparse.Namespace) -> int:
                 player.reject_scene_tail()
             elif action == "add_keyframe":
                 player.playing = False
-                if _add_keyframe(args, state, frame_id):
-                    return RERUN_EXIT_CODE
+                key_mask = _add_keyframe(args, state, frame_id)
+                if key_mask is not None:
+                    try:
+                        player.queue_keyframe(frame_id, key_mask)
+                        print(
+                            f"[Review] 已暂存关键帧 {frame_id}；"
+                            f"关闭播放器后统一处理 {len(player.pending_keyframes)} 个局部修正。",
+                            flush=True,
+                        )
+                    except ValueError as exc:
+                        print(exc, file=sys.stderr)
             elif player.playing:
                 player.advance_for_playback()
     finally:
         state.save()
-        if player.changed and (args.action_file is None or not args.action_file.expanduser().is_file()):
+        if player.pending_keyframes:
+            _write_action(
+                args.action_file,
+                build_batch_rerun_action(
+                    state,
+                    player.pending_keyframes,
+                    selected_segment_ids=selected,
+                    resume_frame=player.current_frame_id,
+                ),
+            )
+        elif player.changed and (args.action_file is None or not args.action_file.expanduser().is_file()):
             _write_action(args.action_file, {"action": "review_changed"})
         cv2.destroyWindow(WINDOW_NAME)
     return 0
