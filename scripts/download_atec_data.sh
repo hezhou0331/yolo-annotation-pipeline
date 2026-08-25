@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="hezhou0331/yolo-annotation-pipeline"
-TAG="${ATEC_DATA_TAG:-data-20260825}"
-ASSET="${ATEC_DATA_ASSET:-atec-real-data-20260825.tar.zst}"
+TAG="${ATEC_DATA_TAG:-data-20260824}"
+ASSET="${ATEC_DATA_ASSET:-atec-real-data-20260824.tar.zst}"
 read -r -a PART_SUFFIXES <<< "${ATEC_DATA_PART_SUFFIXES:-part-aa part-ab}"
 DOWNLOAD_DIR="${ATEC_DOWNLOAD_DIR:-$ROOT/.downloads}"
 FORCE=0

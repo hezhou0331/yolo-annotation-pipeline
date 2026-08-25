@@ -38,10 +38,10 @@ Mask mAP50:       0.950
 Mask mAP50-95:    0.782
 ```
 
-最佳权重不进入 Git 历史，通过 GitHub Release 作为可选附件提供：
+最佳权重不进入 Git 历史，通过 [2026-08-25 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260825) 作为可选附件提供：
 
 ```text
-runs/segment/atec_4class_accepted_finetune_20260824_1634/weights/best.pt
+atec-4class-accepted-finetune-20260824-best.pt
 ```
 
 详细结果见[工作日志](docs/zh-CN/工作日志.md)。
@@ -111,7 +111,7 @@ cd yolo-annotation-pipeline
 
 查看当前数据 Release：
 
-[ATEC data snapshot 2026-08-25](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260825)
+[ATEC data snapshot 2026-08-24](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260824)
 
 ### 4. 配置 Python 环境
 
@@ -314,7 +314,7 @@ YOLO11-seg 数据集时，克隆公开仓库后直接运行：
 ./scripts/download_atec_data.sh
 ```
 
-脚本从公开 GitHub Release 下载 `data-20260825` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
+脚本从公开 GitHub Release 下载 `data-20260824` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
 
 ```text
 projects/atec_real/data/
