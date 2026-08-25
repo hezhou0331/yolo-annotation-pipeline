@@ -62,21 +62,220 @@ App 保持“薄 App”：负责类别选择、场次管理、后台命令和日
 - 严格验证、训练结果发现；
 - 使用真实 `best.pt` 启动外接 `/dev/video0` 或 Orbbec RGB 实时识别。
 
-## 队友首次使用（Private 仓库）
+## GitHub 使用手册（队友）
 
-仓库所有者先在 GitHub 仓库的 `Settings → Collaborators` 中添加队友。队友接受邀请后执行：
+> 当前仓库仍为 **Private**。代码、Manifest 和文档在 Git 中；大体积 RGB-D 数据、Mask、YOLO 数据集和训练权重通过私有 GitHub Release 提供。
+> 未获得仓库权限的账号不能下载数据，也不能提交代码。
+
+### 1. 仓库管理员添加队友
+
+仓库管理员在 GitHub 网页中打开：
+
+```text
+Settings → Collaborators → Add people
+```
+
+使用队友的 GitHub 用户名或邮箱发送邀请。队友必须先接受邀请，之后才能克隆仓库和下载私有 Release。
+
+### 2. 队友第一次安装和登录
+
+建议使用 Ubuntu/Linux。先安装基础工具：
+
+```bash
+sudo apt update
+sudo apt install -y git curl zstd
+```
+
+安装 GitHub CLI 后登录有权限的 GitHub 账号：
 
 ```bash
 gh auth login
+gh auth status
+```
+
+`gh auth status` 必须显示当前账号已经登录。若显示无权访问仓库，请退出后使用接受邀请的账号重新登录。
+
+### 3. 克隆代码并恢复团队数据
+
+```bash
 git clone https://github.com/hezhou0331/yolo-annotation-pipeline.git
 cd yolo-annotation-pipeline
 ./scripts/download_atec_data.sh
+```
+
+下载脚本会自动：
+
+1. 从私有 Release 下载两个数据分卷；
+2. 合并分卷；
+3. 校验 SHA-256；
+4. 恢复 `projects/atec_real/data/` 和 `projects/atec_real/datasets/`。
+
+默认不会覆盖已有本地数据。如果这个目录已经有采集内容，脚本会停止并提示。确认需要合并时才运行：
+
+```bash
+./scripts/download_atec_data.sh --force
+```
+
+查看当前数据 Release：
+
+[ATEC data snapshot 2026-08-24](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260824)
+
+### 4. 配置 Python 环境
+
+完整环境配置见[环境配置](docs/zh-CN/环境配置.md)。本项目通常使用三个环境：
+
+| 环境 | 用途 |
+|---|---|
+| `orbbec` | Gemini 336L RGB-D 采集 |
+| `yolo11` | YOLO11、SAM2、Mask 传播、训练、实时识别 |
+| `foundationpose` | FoundationPose 和部分项目检查工具 |
+
+如果只是查看已有数据、运行 App 或 Review，先确保 `yolo11` 环境可用；如果要重新采集 RGB-D，还需要正确配置 `orbbec` 环境和相机 SDK。
+
+### 5. 启动 App
+
+```bash
 ./scripts/atec-app
 ```
 
-`gh auth login` 必须登录已经获得本私有仓库权限的 GitHub 账号。环境安装与相机配置见
-[环境配置](docs/zh-CN/环境配置.md)，日常采集、关键帧标记、传播和 Review 见
-[App 使用手册](docs/zh-CN/App使用手册.md)。
+App 是薄管理层，不在界面内重复实现算法。它负责调用已有的采集、分段、Mask、SAM2、导出、验证和训练命令。
+
+主流程：
+
+```text
+选择物品
+→ 选择 train/val/test
+→ 采集并保存场次
+→ 补齐所有分段关键帧 Mask
+→ SAM2 传播
+→ 检查连续标注效果
+→ 自动准备 train/val
+→ 验证数据集
+→ 训练 YOLO11
+→ 摄像头实时识别
+```
+
+### 6. 采集和标记
+
+1. 在 App 中选择物品。场次列表只显示当前物品；下方分为“未标记完成”和“已标记完成”。
+2. 选择数据用途：`train`、`val` 或 `test`。
+3. 点击开始采集，确认出现 `Orbbec RGB-D Capture` 预览窗口。
+4. 点击停止，或在采集终端按 `Ctrl+C`。
+5. 选择保存或丢弃。丢弃只删除本次暂存，不影响已保存场次。
+6. 点击“标下一个”，完成当前场次所有缺失的关键帧 Mask。
+7. 只有清单全部完成后，才点击“继续自动处理”或“开始传播”。
+
+“已标记完成”只表示必需关键帧 Mask 已保存，不表示每一帧的 SAM2 结果都正确。
+
+### 7. 检查连续标注效果
+
+在已完成关键帧的场次下点击“检查标注效果”，可以按分段播放原始帧，并查看 RGB、半透明 Mask、轮廓、状态和失败原因。
+
+```text
+空格       播放/暂停
+← / →      前后逐帧
+↑ / ↓      上一个/下一个分段
+A          当前帧 accepted
+R          当前帧 review
+X          当前帧 rejected
+[ / ]      标记问题区间开始/结束
+K          当前帧增加关键帧并重新传播
+Q / Esc     退出
+```
+
+重要操作：
+
+- **从此帧开始全部拒绝**：当前帧到指定范围末尾不进入训练；
+- **在此处增加关键帧并重新传播**：适用于 Mask 从某一帧开始逐渐偏离物品的情况。
+
+`accepted` 才允许进入正式训练数据；`review` 和 `rejected` 默认不会进入训练。拒绝帧不会删除原始 RGB、Depth 或 Mask 文件。
+
+### 8. 准备数据、验证和训练
+
+在 App 中点击“自动准备训练数据”。程序会扫描所有类别的已保存场次，并按完整场次或采集视频切分 `train/val`，不会把同一个视频的相邻帧随机拆到两边。
+
+训练按钮只有在以下条件满足后才会启用：
+
+- train 和 val 都有有效图片与标签；
+- 标签格式和类别 ID 合法；
+- accepted/review/rejected 门控通过；
+- train/val 没有相同的场次、`capture_session_id` 或 `source_video_id`；
+- 数据集验证通过。
+
+当前 Release 的模型是四类阶段性模型：
+
+```text
+can
+watermelon_rind
+meal_box
+red_paper_bag
+```
+
+它不是完整七类模型。等七类数据都完成 Review 和验证后，再训练正式七类模型。
+
+### 9. 实时识别
+
+训练生成 `best.pt` 后，可以在 App 中点击“启动实时识别”，也可以直接运行：
+
+```bash
+./scripts/atec-live-yolo
+```
+
+默认使用外接摄像头 `/dev/video0`。模型训练过哪些类别，就识别哪些类别，不是黄罐专用。
+
+```text
+Q / Esc / Ctrl+C   退出实时识别
+```
+
+也可以手动指定模型：
+
+```bash
+ATEC_YOLO_MODEL=/path/to/best.pt ./scripts/atec-live-yolo
+```
+
+### 10. 获取代码更新
+
+队友开始工作前建议先同步：
+
+```bash
+git pull --ff-only origin main
+```
+
+如果本地有未提交修改，先保存自己的工作，不要直接覆盖。完成修改后建议使用独立分支：
+
+```bash
+git switch -c teammate/<short-description>
+git add <changed-files>
+git commit -m "describe the change"
+git push -u origin teammate/<short-description>
+```
+
+不要提交以下内容：
+
+```text
+projects/atec_real/data/
+projects/atec_real/datasets/
+models/
+runs/
+third_party/
+xcx/
+```
+
+这些内容已经由 `.gitignore` 或私有 Release 管理。
+
+### 11. 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| `gh auth` 无权访问 | 确认已接受 Collaborator 邀请，并使用正确 GitHub 账号登录 |
+| 下载脚本提示目录已有数据 | 先备份本地数据；确认需要合并时使用 `--force` |
+| App 没有打开相机预览 | 检查 USB、关闭占用相机的程序，再运行环境检查 |
+| 一直显示第一个分段 | 查看关键帧清单，逐个完成缺失分段，不要只看整个场次名称 |
+| 第一帧或后续帧是 rejected | 查看播放器中的失败原因；必要时增加关键帧并重新传播 |
+| 训练按钮不可用 | 先检查 accepted 数量、train/val 是否完整以及数据验证结果 |
+| 实时识别误检多 | 先保持 `conf=0.25`；降低置信度会增加背景误检 |
+
+详细命令见[项目命令](docs/zh-CN/项目命令.md)，App 操作细节见[App 使用手册](docs/zh-CN/App使用手册.md)，环境问题见[环境配置](docs/zh-CN/环境配置.md)。
 
 ## 外接摄像头启动 YOLO 实时识别
 
