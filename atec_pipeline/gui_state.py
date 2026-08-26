@@ -234,14 +234,15 @@ def find_scene_manifest(project_root: Path, scene_name: str) -> tuple[Path | Non
         if candidate.is_file():
             try:
                 data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
-                manifest_split = str((data.get("project") or {}).get("split") or split)
+                project = data.get("project") if isinstance(data, dict) else None
+                manifest_split = str(project.get("split") or split) if isinstance(project, dict) else split
             except (OSError, TypeError, yaml.YAMLError):
                 manifest_split = split
             return candidate, manifest_split
     return None, "train"
 
 
-def _scene_export_report(project_root: Path, scene_name: str, split: str) -> Path | None:
+def find_scene_export_report(project_root: Path, scene_name: str, split: str) -> Path | None:
     report_root = Path(project_root).expanduser().resolve() / "datasets" / "atec_yolo11_seg" / "project_reports"
     preferred = report_root / f"{scene_name}_{split}_report.json"
     if preferred.is_file():
@@ -274,7 +275,7 @@ def load_scene_human_review_completion(
         return HumanReviewCompletion(marker, False, "marker_invalid")
 
     _manifest, split = find_scene_manifest(root, scene.name)
-    current_report = _scene_export_report(root, scene.name, split)
+    current_report = find_scene_export_report(root, scene.name, split)
     completed_at = str(data.get("completed_at") or "") or None
     if current_report is None or not current_report.is_file():
         return HumanReviewCompletion(marker, False, "export_report_missing", completed_at)
@@ -294,7 +295,7 @@ def mark_scene_human_review_complete(project_root: Path, scene_dir: Path) -> Pat
     root = Path(project_root).expanduser().resolve()
     scene = Path(scene_dir).expanduser().resolve()
     _manifest, split = find_scene_manifest(root, scene.name)
-    report = _scene_export_report(root, scene.name, split)
+    report = find_scene_export_report(root, scene.name, split)
     if report is None or not report.is_file():
         raise FileNotFoundError("当前场次没有YOLO导出报告，不能标记人工Review完成")
     summary = load_export_summary(report)
@@ -343,7 +344,7 @@ def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowSt
     manifest, split = find_scene_manifest(root, scene_name)
     segments = scene / "project_reports" / "segments.json"
     progress = load_mask_progress(segments) if segments.is_file() else MaskProgress((), 0, 0)
-    report_path = _scene_export_report(root, scene_name, split)
+    report_path = find_scene_export_report(root, scene_name, split)
     export = load_export_summary(report_path) if report_path else None
     review_completion = load_scene_human_review_completion(root, scene)
 
@@ -415,9 +416,37 @@ def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowSt
     )
 
 
+def _snapshot_project_root(report: Path) -> Path | None:
+    """Infer the local ``projects/atec_real`` root from a scene report.
+
+    Older exports recorded the producer machine's absolute paths.  A released
+    snapshot must still be usable after extraction elsewhere, so absolute
+    paths that no longer exist are remapped by their ``data/`` or
+    ``datasets/`` suffix.
+    """
+    resolved = Path(report).expanduser().resolve()
+    for parent in (resolved.parent, *resolved.parents):
+        if parent.name in {"data", "datasets"}:
+            return parent.parent
+    return None
+
+
 def _resolved_report_path(raw_path: str, report: Path) -> Path:
     path = Path(raw_path).expanduser()
-    return path.resolve() if path.is_absolute() else (report.parent / path).resolve()
+    if not path.is_absolute():
+        return (report.parent / path).resolve()
+    if path.is_file():
+        return path.resolve()
+    project_root = _snapshot_project_root(report)
+    if project_root is not None:
+        parts = path.parts
+        for marker in ("data", "datasets"):
+            if marker in parts:
+                suffix = Path(*parts[parts.index(marker):])
+                candidate = (project_root / suffix).resolve()
+                if candidate.exists():
+                    return candidate
+    return path.resolve()
 
 
 def load_mask_progress(report_path: Path) -> MaskProgress:

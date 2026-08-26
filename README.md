@@ -2,49 +2,38 @@
 
 使用 Orbbec Gemini 336L 采集 RGB-D，以人工关键帧 Mask + SAM2 传播生成实例分割标签，通过质量门控导出 YOLO11-seg，并用薄桌面 App 管理采集、标注、验证、训练和实时识别。
 
-## 当前里程碑（2026-08-25）
+## 当前里程碑（2026-08-26）
 
-当前完成的是**四类阶段性数据集和模型**，不是完整七类模型：
+当前已整理出 **7 类 YOLO11-seg 数据集**；当前可直接用于实时测试的训练权重仍是 **5 类阶段模型**，不是完整七类模型：
 
 ```text
 can
 watermelon_rind
 meal_box
 red_paper_bag
+blue_bin
+green_bin
+red_bin
 ```
 
-质量门控固定为：`accepted` 进入 `train/val`，`review` 和 `rejected` 不进入。经 2026-08-25 重新统计与严格验证，当前共有 **2,098 张 accepted 图片/标签对**：
+当前导出数据统计（只统计正式 `train/val`，不包含 `_staging`）：
 
-| split | 图片/标签 | can | watermelon_rind | meal_box | red_paper_bag |
-|---|---:|---:|---:|---:|---:|
-| train | 1,820 | 448 | 593 | 475 | 304 |
-| val | 278 | 82 | 65 | 58 | 73 |
-| 合计 | **2,098** | **530** | **658** | **533** | **377** |
+| split | 图片/标签 | can | watermelon_rind | meal_box | red_paper_bag | blue_bin | green_bin | red_bin |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| train | 3,431 | 349 | 764 | 403 | 553 | 526 | 461 | 375 |
+| val | 532 | 82 | 65 | 58 | 73 | 103 | 87 | 64 |
+| 合计 | **3,963** | **431** | **829** | **461** | **626** | **629** | **548** | **439** |
 
-另外有 `1,032` 帧被标记为 `rejected`，不会进入训练；当前 `review=0`。验证集按完整场次/采集视频划分，没有随机拆相邻帧。严格验证未发现跨 split 重复图片、`capture_session_id` 或 `source_video_id` 泄漏。当前只有 `train + val`，外接摄像头作为现场测试，不把 `val` 冒充 `test`。
+每张正式图片当前对应一个有效实例标签；`review` / `rejected` 帧不进入正式训练目录。验证集按完整场次/采集视频划分，不随机拆分相邻帧；当前没有独立 `test` 集。原始 RGB-D、关键 Mask、传播结果和 Review 报告也会作为可选数据快照发布。
 
-当前最新实验：
+当前可选训练权重：
 
 ```text
-runs/segment/atec_4class_accepted_finetune_20260824_1634
+runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt
+类别：can、watermelon_rind、meal_box、red_paper_bag、blue_bin
 ```
 
-该实验使用上述 2,098 张 accepted 数据。最佳验证结果：
-
-```text
-Mask Precision:   0.888
-Mask Recall:      0.916
-Mask mAP50:       0.950
-Mask mAP50-95:    0.782
-```
-
-最佳权重不进入 Git 历史，通过 [2026-08-25 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260825) 作为可选附件提供：
-
-```text
-atec-4class-accepted-finetune-20260824-best.pt
-```
-
-详细结果见[工作日志](docs/zh-CN/工作日志.md)。
+该权重是五类阶段模型，只能识别上述五类；它不包含 `green_bin` 和 `red_bin`。等七类数据完成统一 Review 后，再训练正式七类模型。权重不进入 Git 历史，通过 [2026-08-26 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260826) 作为可选附件提供。
 
 ## 最快开始
 
@@ -111,7 +100,7 @@ cd yolo-annotation-pipeline
 
 查看当前数据 Release：
 
-[ATEC data snapshot 2026-08-24](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260824)
+[ATEC data snapshot 2026-08-26](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260826)
 
 ### 4. 配置 Python 环境
 
@@ -195,16 +184,17 @@ Q / Esc     退出
 - train/val 没有相同的场次、`capture_session_id` 或 `source_video_id`；
 - 数据集验证通过。
 
-当前 Release 的模型是四类阶段性模型：
+当前数据集已经包含七类，但当前可直接下载测试的权重是五类阶段性模型：
 
 ```text
 can
 watermelon_rind
 meal_box
 red_paper_bag
+blue_bin
 ```
 
-它不是完整七类模型。等七类数据都完成 Review 和验证后，再训练正式七类模型。
+它不是完整七类模型；`green_bin` 和 `red_bin` 需要等七类统一训练后才能由同一个模型识别。
 
 ### 9. 实时识别
 
@@ -272,7 +262,7 @@ xcx/
 
 ## 外接摄像头启动 YOLO 实时识别
 
-最短命令（默认使用四类训练结果、`/dev/video0`、`conf=0.25`）：
+最短命令（默认使用五类阶段模型、外接摄像头、`conf=0.25`）：
 
 ```bash
 cd /path/to/YOLO_Annotation_Pipeline
@@ -285,14 +275,14 @@ cd /path/to/YOLO_Annotation_Pipeline
 cd /path/to/YOLO_Annotation_Pipeline
 ~/miniforge3/envs/yolo11/bin/python \
   tools/live_yolo11_seg.py \
-  --model runs/segment/atec_4class_baseline_20260824/weights/best.pt \
+  --model runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt \
   --source 0 \
   --conf 0.25 \
   --imgsz 640 \
   --device 0
 ```
 
-这里的 `--source 0` 对应外接 HD Webcam `/dev/video0`。这是通用四类实例分割识别，不是黄罐专用。按 `Q`、`Esc` 或 `Ctrl+C` 退出。建议先保持 `conf=0.25`；降低到 `0.15` 会明显增加背景误检。
+这里的 `--source 0` 对应外接 HD Webcam `/dev/video0`。这是通用五类实例分割识别，不是黄罐专用。按 `Q`、`Esc` 或 `Ctrl+C` 退出。建议先保持 `conf=0.25`；降低到 `0.15` 会明显增加背景误检。
 
 ## 数据目录边界
 
@@ -314,7 +304,7 @@ YOLO11-seg 数据集时，克隆公开仓库后直接运行：
 ./scripts/download_atec_data.sh
 ```
 
-脚本从公开 GitHub Release 下载 `data-20260824` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
+脚本从公开 GitHub Release 下载 `data-20260826` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
 
 ```text
 projects/atec_real/data/

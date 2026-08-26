@@ -58,3 +58,5 @@ xcx/
 # Training outputs
 wandb/
 mlruns/
+# Runtime batch reports are local state; share data reports through the data snapshot.
+projects/*/project_reports/

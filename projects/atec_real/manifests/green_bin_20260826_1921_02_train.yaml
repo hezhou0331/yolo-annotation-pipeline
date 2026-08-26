@@ -7,7 +7,7 @@ classes:
   5: green_bin
   6: red_bin
 project:
-  scene: ../data/scenes/can/can_20260824_0856_01
+  scene: ../data/scenes/green_bin/green_bin_20260826_1921_02
   output: ../datasets/atec_yolo11_seg
   foundationpose_dir: ../../../third_party/FoundationPose
   sam2_python: ~/miniforge3/envs/yolo11/bin/python
@@ -20,9 +20,9 @@ project:
   sam2_min_recovery_seed_iou: 0.35
   sam2_max_flow_shift_norm: 0.35
   split: train
-  capture_session_id: session_can_20260824_0856_01
-  source_video_id: can_20260824_0856_01_clip_01
-  name_prefix: can_20260824_0856_01_
+  capture_session_id: session_green_bin_20260826_1921_02
+  source_video_id: green_bin_20260826_1921_02_clip_01
+  name_prefix: green_bin_20260826_1921_02_
   image_mode: hardlink
   inference_max_side: 640
   max_consecutive_rejects: 3
@@ -52,10 +52,10 @@ project:
     max_center_shift_norm: 0.4
     min_dominant_component_ratio: 0.7
 instances:
-- instance_id: can_01
-  class_id: 0
-  class_name: can
+- instance_id: green_bin_01
+  class_id: 5
+  class_name: green_bin
   tracker: sam2
   start: 0
   max_frames: 0
-  key_mask_dir: ../data/key_masks/can_20260824_0856_01/can_01
+  key_mask_dir: ../data/key_masks/green_bin_20260826_1921_02/green_bin_01

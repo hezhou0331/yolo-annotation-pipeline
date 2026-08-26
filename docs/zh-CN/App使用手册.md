@@ -161,7 +161,7 @@ Q/Esc      退出
 Q / Esc / Ctrl+C   退出识别
 ```
 
-当前四类模型也可直接启动：
+当前五类阶段模型也可直接启动：
 
 ```bash
 ./scripts/atec-live-yolo

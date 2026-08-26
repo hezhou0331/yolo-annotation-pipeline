@@ -381,6 +381,28 @@ def main() -> int:
 
         contexts = window._review_contexts()
         assert len(contexts) == 1 and contexts[0]["instance_id"] == "can_01"
+
+        # A scene-level train→val split keeps the original export-report filename.
+        # Review must resolve that report by scene instead of assuming the suffix
+        # always matches the current Manifest split.
+        val_manifest = manifest.with_name(f"{window.session.scene_name}_val.yaml")
+        manifest.rename(val_manifest)
+        val_manifest.write_text(
+            val_manifest.read_text(encoding="utf-8").replace("split: train", "split: val"),
+            encoding="utf-8",
+        )
+        window.session.split = "val"
+        window._refresh_state(refresh_scenes=False)
+        assert window.review_button.isEnabled(), "train→val split must not disable an existing Review sequence"
+        assert len(window._review_contexts()) == 1
+        window.session.split = "train"
+        val_manifest.rename(manifest)
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace("split: val", "split: train"),
+            encoding="utf-8",
+        )
+        window._refresh_state(refresh_scenes=False)
+
         review_program, review_args = window.command_for_review(contexts[0], ("0",))
         assert review_program.endswith("envs/yolo11/bin/python")
         assert not review_program.startswith("~"), "portable home paths must be expanded before QProcess launch"
@@ -453,26 +475,26 @@ def main() -> int:
         assert window.open_training_result_button.isEnabled()
         assert window.live_start_button.isEnabled()
         assert str(run_dir / "weights/best.pt") in window.live_model_label.text()
-        assert window.live_source_kind.currentData() == "opencv"
-        assert window.live_source.isEnabled(), "external webcam mode must expose its source index"
-        assert window.live_source.text() == "0"
-        assert "外接摄像头" in window.live_start_button.text()
+        assert window.live_source_kind.currentData() == "orbbec"
+        assert not window.live_source.isEnabled(), "the external Orbbec camera must be the default live source"
+        assert "Orbbec" in window.live_start_button.text()
         live_program, live_args = window.command_for_live()
         assert live_program.endswith("envs/yolo11/bin/python")
-        assert "live_yolo11_seg.py" in live_args[0]
+        assert "live_yolo11_seg_orbbec.py" in live_args[0]
         assert str(run_dir / "weights/best.pt") in live_args
-        assert "--source" in live_args and live_args[live_args.index("--source") + 1] == "0"
         assert "--conf" in live_args and live_args[live_args.index("--conf") + 1] == "0.25"
         assert "yellow_can" not in " ".join(live_args), "live inference must be generic, not hard-coded to yellow can"
 
-        orbbec_index = window.live_source_kind.findData("orbbec")
-        assert orbbec_index >= 0
-        window.live_source_kind.setCurrentIndex(orbbec_index)
-        assert not window.live_source.isEnabled(), "Orbbec SDK mode must not use a V4L2 source index"
-        assert "Orbbec" in window.live_start_button.text()
-        orbbec_program, orbbec_args = window.command_for_live()
-        assert orbbec_program == live_program
-        assert "live_yolo11_seg_orbbec.py" in orbbec_args[0]
+        webcam_index = window.live_source_kind.findData("opencv")
+        assert webcam_index >= 0
+        window.live_source_kind.setCurrentIndex(webcam_index)
+        assert window.live_source.isEnabled(), "HD Webcam mode must expose its source index"
+        assert window.live_source.text() == "0"
+        assert "外接摄像头" in window.live_start_button.text()
+        webcam_program, webcam_args = window.command_for_live()
+        assert webcam_program == live_program
+        assert "live_yolo11_seg.py" in webcam_args[0]
+        assert "--source" in webcam_args and webcam_args[webcam_args.index("--source") + 1] == "0"
 
         window.close()
     app.processEvents()

@@ -271,6 +271,27 @@ def main() -> int:
         mask_b.write_bytes(b"mask")
         assert load_mask_progress(report).complete
 
+        # Shared snapshots may contain absolute paths from the producer
+        # machine.  Re-anchor those paths at the local projects/atec_real
+        # root instead of reporting valid masks as missing.
+        portable_scene = project_root / "data/scenes/can/portable_scene"
+        portable_report = portable_scene / "project_reports/segments.json"
+        portable_mask = project_root / "data/key_masks/portable_scene/can_01/000000.png"
+        portable_report.parent.mkdir(parents=True)
+        portable_mask.parent.mkdir(parents=True)
+        portable_mask.write_bytes(b"mask")
+        portable_report.write_text(
+            json.dumps({"segments": [{
+                "segment_id": 0, "start_id": "000000", "end_id": "000000",
+                "required_key_mask_paths": {
+                    "can_01": "/producer-machine/projects/atec_real/data/key_masks/portable_scene/can_01/000000.png"
+                },
+            }]}),
+            encoding="utf-8",
+        )
+        portable_progress = load_mask_progress(portable_report)
+        assert portable_progress.complete
+
         # Training effect summary uses validation mask metrics and locates best.pt.
         run_dir = project_root / "runs/segment/demo"
         (run_dir / "weights").mkdir(parents=True)

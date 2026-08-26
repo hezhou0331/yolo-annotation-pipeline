@@ -7,7 +7,7 @@ classes:
   5: green_bin
   6: red_bin
 project:
-  scene: ../data/scenes/watermelon_rind/watermelon_rind_20260824_1611_02
+  scene: ../data/scenes/red_paper_bag/red_paper_bag_20260826_1953_01
   output: ../datasets/atec_yolo11_seg
   foundationpose_dir: ../../../third_party/FoundationPose
   sam2_python: ~/miniforge3/envs/yolo11/bin/python
@@ -20,9 +20,9 @@ project:
   sam2_min_recovery_seed_iou: 0.35
   sam2_max_flow_shift_norm: 0.35
   split: train
-  capture_session_id: session_watermelon_rind_20260824_1611_02
-  source_video_id: watermelon_rind_20260824_1611_02_clip_01
-  name_prefix: watermelon_rind_20260824_1611_02_
+  capture_session_id: session_red_paper_bag_20260826_1953_01
+  source_video_id: red_paper_bag_20260826_1953_01_clip_01
+  name_prefix: red_paper_bag_20260826_1953_01_
   image_mode: hardlink
   inference_max_side: 640
   max_consecutive_rejects: 3
@@ -52,10 +52,10 @@ project:
     max_center_shift_norm: 0.4
     min_dominant_component_ratio: 0.7
 instances:
-- instance_id: watermelon_rind_01
-  class_id: 1
-  class_name: watermelon_rind
+- instance_id: red_paper_bag_01
+  class_id: 3
+  class_name: red_paper_bag
   tracker: sam2
   start: 0
   max_frames: 0
-  key_mask_dir: ../data/key_masks/watermelon_rind_20260824_1611_02/watermelon_rind_01
+  key_mask_dir: ../data/key_masks/red_paper_bag_20260826_1953_01/red_paper_bag_01
