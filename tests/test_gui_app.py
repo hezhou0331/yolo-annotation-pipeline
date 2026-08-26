@@ -116,6 +116,8 @@ def main() -> int:
         assert "暂无未标记完成的场次" in empty_texts
         assert "── 已标记完成（0）──" in empty_texts
         assert "暂无已标记完成的场次" in empty_texts
+        assert "── 已经过人工 Review（0）──" in empty_texts
+        assert "暂无已经过人工 Review的场次" in empty_texts
 
         can_incomplete = make_scene("can", "can_filter_incomplete", masks_complete=False)
         can_failed = make_scene("can", "can_filter_failed", masks_complete=True, export_failed=True)
@@ -131,6 +133,7 @@ def main() -> int:
         assert not any("watermelon_filter_complete" in text for text in can_texts)
         assert "── 未标记完成（1）──" in can_texts
         assert "── 已标记完成（1）──" in can_texts
+        assert "── 已经过人工 Review（0）──" in can_texts
         assert "场次 2" in window.class_frame_summary.text()
         assert "RGB-D 总帧 2" in window.class_frame_summary.text()
         assert "已处理 1" in window.class_frame_summary.text()
@@ -154,6 +157,7 @@ def main() -> int:
         assert "── 未标记完成（0）──" in watermelon_texts
         assert "暂无未标记完成的场次" in watermelon_texts
         assert "── 已标记完成（1）──" in watermelon_texts
+        assert "── 已经过人工 Review（0）──" in watermelon_texts
         assert "场次 1" in window.class_frame_summary.text()
         assert "RGB-D 总帧 1" in window.class_frame_summary.text()
         assert "待 SAM2 传播 1 场" in window.class_frame_summary.text()
@@ -247,6 +251,10 @@ def main() -> int:
         window._new_session_preview()
         assert window.session is not None
         window.session.scene_dir.mkdir(parents=True)
+        (window.session.scene_dir / "rgb").mkdir()
+        (window.session.scene_dir / "depth").mkdir()
+        (window.session.scene_dir / "rgb/000000.png").write_bytes(b"rgb")
+        (window.session.scene_dir / "depth/000000.png").write_bytes(b"depth")
         started: list[tuple[str, str, list[str]]] = []
         window._start_task = lambda kind, program, args: started.append((kind, program, args))  # type: ignore[method-assign]
         window._refresh_state()
@@ -334,6 +342,43 @@ def main() -> int:
         assert "待检查 25" in window.propagation_status_label.text()
         assert window.review_button.text() == "检查当前场次标注效果"
         assert window.review_button.isEnabled()
+        assert window.mark_review_complete_button.text() == "标记当前场次 Review 完成"
+        assert window.mark_review_complete_button.isEnabled()
+        assert not window.clear_review_complete_button.isEnabled()
+
+        marker = window.session.scene_dir / "project_reports/manual_review_complete.json"
+        original_question = QMessageBox.question
+        original_information = QMessageBox.information
+        review_notices: list[tuple[str, str]] = []
+        QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)  # type: ignore[method-assign]
+        QMessageBox.information = staticmethod(  # type: ignore[method-assign]
+            lambda _parent, title, text, *args, **kwargs: review_notices.append((title, text)) or QMessageBox.Ok
+        )
+        try:
+            window.mark_current_scene_review_complete()
+        finally:
+            QMessageBox.question = original_question  # type: ignore[method-assign]
+            QMessageBox.information = original_information  # type: ignore[method-assign]
+        assert marker.is_file()
+        reviewed_texts = scene_list_texts()
+        assert "── 已经过人工 Review（1）──" in reviewed_texts
+        assert any(window.session.scene_name in text for text in reviewed_texts)
+        assert not window.mark_review_complete_button.isEnabled()
+        assert window.clear_review_complete_button.isEnabled()
+        assert any("Review完成" in title.replace(" ", "") for title, _text in review_notices)
+
+        original_question = QMessageBox.question
+        QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)  # type: ignore[method-assign]
+        try:
+            window.clear_current_scene_review_complete()
+        finally:
+            QMessageBox.question = original_question  # type: ignore[method-assign]
+        assert not marker.exists()
+        unreviewed_texts = scene_list_texts()
+        assert "── 已经过人工 Review（0）──" in unreviewed_texts
+        assert window.mark_review_complete_button.isEnabled()
+        assert not window.clear_review_complete_button.isEnabled()
+
         contexts = window._review_contexts()
         assert len(contexts) == 1 and contexts[0]["instance_id"] == "can_01"
         review_program, review_args = window.command_for_review(contexts[0], ("0",))

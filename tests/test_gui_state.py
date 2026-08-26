@@ -22,6 +22,9 @@ from atec_pipeline.gui_state import (  # noqa: E402
     load_mask_progress,
     load_object_classes,
     load_training_summary,
+    load_scene_human_review_completion,
+    mark_scene_human_review_complete,
+    clear_scene_human_review_complete,
     make_capture_session,
     paired_rgbd_frame_count,
     inspect_scene_integrity,
@@ -359,6 +362,53 @@ def main() -> int:
         )
         state = scene_workflow_state(project_root, scene)
         assert state.code == "dataset_ready" and state.color == "green" and state.training_eligible
+
+        # Human Review completion is explicit, persists beside scene reports,
+        # and is bound to the exact export report version that was checked.
+        completion = load_scene_human_review_completion(project_root, scene)
+        assert not completion.valid and completion.reason == "marker_missing"
+        marker = mark_scene_human_review_complete(project_root, scene)
+        assert marker == scene / "project_reports/manual_review_complete.json"
+        assert marker.is_file()
+        marker_data = json.loads(marker.read_text(encoding="utf-8"))
+        assert marker_data["scene"] == "state_scene"
+        assert marker_data["class_name"] == "can"
+        assert marker_data["frame_status_counts"] == {"accepted": 1, "review": 0, "rejected": 0}
+
+        completion = load_scene_human_review_completion(project_root, scene)
+        assert completion.valid and completion.marker_path == marker
+        state = scene_workflow_state(project_root, scene)
+        assert state.group == "human_reviewed"
+        assert state.human_review_complete
+        assert state.code == "dataset_ready"
+
+        # Any re-export changes the report mtime and invalidates the old review marker.
+        report_payload = json.loads(state_report.read_text(encoding="utf-8"))
+        report_payload["review_revision"] = 2
+        state_report.write_text(json.dumps(report_payload), encoding="utf-8")
+        completion = load_scene_human_review_completion(project_root, scene)
+        assert not completion.valid and completion.reason == "export_report_changed"
+        state = scene_workflow_state(project_root, scene)
+        assert state.group == "keyframes_complete"
+        assert not state.human_review_complete
+
+        # Re-marking binds to the new report; explicit cancellation removes it.
+        mark_scene_human_review_complete(project_root, scene)
+        assert load_scene_human_review_completion(project_root, scene).valid
+        assert clear_scene_human_review_complete(scene)
+        assert not marker.exists()
+        assert not clear_scene_human_review_complete(scene)
+
+        # A scene without an export report cannot be falsely marked reviewed.
+        no_export_scene = project_root / "data/scenes/can/no_export_scene"
+        (no_export_scene / "rgb").mkdir(parents=True)
+        (no_export_scene / "depth").mkdir()
+        try:
+            mark_scene_human_review_complete(project_root, no_export_scene)
+        except FileNotFoundError as exc:
+            assert "导出报告" in str(exc)
+        else:
+            raise AssertionError("scene without export report must not be marked reviewed")
 
     print("GUI_STATE_ASSERTIONS_PASSED")
     return 0

@@ -45,7 +45,10 @@ from .gui_state import (
     load_export_summary,
     load_mask_progress,
     load_object_classes,
+    load_scene_human_review_completion,
     load_training_summary,
+    mark_scene_human_review_complete,
+    clear_scene_human_review_complete,
     make_capture_session,
     manifest_for_session,
     paired_rgbd_frame_count,
@@ -379,6 +382,18 @@ class AtecMainWindow(QMainWindow):
         self.review_button.setToolTip("按原始帧顺序播放 RGB + 半透明 Mask + 轮廓，并人工修改逐帧状态")
         self.review_button.clicked.connect(self.start_review)
         layout.addWidget(self.review_button)
+        review_state_row = QHBoxLayout()
+        self.mark_review_complete_button = QPushButton("标记当前场次 Review 完成")
+        self.mark_review_complete_button.setToolTip(
+            "仅在完整检查当前采集场次后点击；不会移动或修改RGB-D、Mask和YOLO数据"
+        )
+        self.clear_review_complete_button = QPushButton("取消 Review 完成标记")
+        self.clear_review_complete_button.setToolTip("只删除人工Review完成元数据，不修改标注和训练数据")
+        self.mark_review_complete_button.clicked.connect(self.mark_current_scene_review_complete)
+        self.clear_review_complete_button.clicked.connect(self.clear_current_scene_review_complete)
+        review_state_row.addWidget(self.mark_review_complete_button)
+        review_state_row.addWidget(self.clear_review_complete_button)
+        layout.addLayout(review_state_row)
         return group
 
     def _build_advanced_panel(self) -> QGroupBox:
@@ -901,6 +916,7 @@ class AtecMainWindow(QMainWindow):
         groups = (
             ("needs_manual", "未标记完成"),
             ("keyframes_complete", "已标记完成"),
+            ("human_reviewed", "已经过人工 Review"),
         )
         colors = {
             "blue": QColor("#d6ecff"),
@@ -1040,6 +1056,17 @@ class AtecMainWindow(QMainWindow):
         except (OSError, ValueError, TypeError, json.JSONDecodeError, yaml.YAMLError):
             can_review = False
         self.review_button.setEnabled(not active and can_review)
+        active_scene = self.session.scene_dir if self.session and self.session.scene_dir.is_dir() else None
+        if active_scene is not None:
+            completion = load_scene_human_review_completion(self.project_root, active_scene)
+            marker_exists = completion.marker_path.is_file()
+        else:
+            completion = None
+            marker_exists = False
+        self.mark_review_complete_button.setEnabled(
+            not active and can_review and completion is not None and not completion.valid
+        )
+        self.clear_review_complete_button.setEnabled(not active and marker_exists)
         self.train_button.setEnabled(not active and self.validation_passed and self.has_independent_val())
         self.stop_train_button.setEnabled(main_active and self.task_kind == "train")
         self.live_start_button.setEnabled(not active and bool(self._live_model_path))
@@ -1393,6 +1420,58 @@ class AtecMainWindow(QMainWindow):
             self._start_task("review", program, args)
         except Exception as exc:
             QMessageBox.warning(self, "无法检查标注效果", str(exc))
+
+    def mark_current_scene_review_complete(self) -> None:
+        """Explicitly mark the entire selected scene as human reviewed."""
+        try:
+            session = self._require_session()
+            if not session.scene_dir.is_dir():
+                raise FileNotFoundError("当前场次尚未正式保存")
+            if not self._review_contexts():
+                raise FileNotFoundError("当前场次没有可播放的SAM2 Mask和质量报告，请先完成自动处理")
+            answer = QMessageBox.question(
+                self,
+                "确认整场人工 Review 完成",
+                "请确认你已经检查了当前采集场次的全部必要分段，而不是只检查其中一小段。\n\n"
+                "此操作只写入完成标记，不会移动或修改RGB-D、Mask和YOLO数据。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            marker = mark_scene_human_review_complete(self.project_root, session.scene_dir)
+            self._append_log(f"[Review] 已标记整场人工Review完成：{marker}")
+            self._refresh_state()
+            QMessageBox.information(
+                self,
+                "人工 Review 完成",
+                "当前场次已移入“已经过人工 Review”。如果之后重新传播或重新导出，标记会自动失效。",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "无法标记 Review 完成", str(exc))
+
+    def clear_current_scene_review_complete(self) -> None:
+        """Clear only the selected scene's completion marker."""
+        try:
+            session = self._require_session()
+            marker = session.scene_dir / "project_reports" / "manual_review_complete.json"
+            if not marker.is_file():
+                self._refresh_state()
+                return
+            answer = QMessageBox.question(
+                self,
+                "取消人工 Review 完成标记",
+                "只取消完成状态，不会删除或修改RGB-D、Mask、Manifest和YOLO标签。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            clear_scene_human_review_complete(session.scene_dir)
+            self._append_log(f"[Review] 已取消整场人工Review完成标记：{session.scene_name}")
+            self._refresh_state()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法取消 Review 完成标记", str(exc))
 
     # ---------- advanced command actions ----------
     def run_segment(self) -> None:

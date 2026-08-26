@@ -82,6 +82,20 @@ class ExportSummary:
         return self.total > 0 and self.needs_review == 0
 
 
+MANUAL_REVIEW_COMPLETE_FILENAME = "manual_review_complete.json"
+
+
+@dataclass(frozen=True)
+class HumanReviewCompletion:
+    """Validity of one scene's explicit full-sequence human Review marker."""
+
+    marker_path: Path
+    valid: bool
+    reason: str
+    completed_at: str | None = None
+    export_report_path: Path | None = None
+
+
 @dataclass(frozen=True)
 class SceneWorkflowState:
     """One scene's filesystem-derived workflow state for CLI and GUI use."""
@@ -105,6 +119,7 @@ class SceneWorkflowState:
     accepted: int = 0
     review: int = 0
     rejected: int = 0
+    human_review_complete: bool = False
 
     @property
     def training_eligible(self) -> bool:
@@ -238,6 +253,83 @@ def _scene_export_report(project_root: Path, scene_name: str, split: str) -> Pat
     return None
 
 
+def _human_review_marker_path(scene_dir: Path) -> Path:
+    return Path(scene_dir).expanduser().resolve() / "project_reports" / MANUAL_REVIEW_COMPLETE_FILENAME
+
+
+def load_scene_human_review_completion(
+    project_root: Path, scene_dir: Path
+) -> HumanReviewCompletion:
+    """Load an explicit completion marker and validate it against the current export."""
+    root = Path(project_root).expanduser().resolve()
+    scene = Path(scene_dir).expanduser().resolve()
+    marker = _human_review_marker_path(scene)
+    if not marker.is_file():
+        return HumanReviewCompletion(marker, False, "marker_missing")
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return HumanReviewCompletion(marker, False, "marker_invalid")
+    if not isinstance(data, dict) or data.get("scene") != scene.name or data.get("class_name") != scene.parent.name:
+        return HumanReviewCompletion(marker, False, "marker_invalid")
+
+    _manifest, split = find_scene_manifest(root, scene.name)
+    current_report = _scene_export_report(root, scene.name, split)
+    completed_at = str(data.get("completed_at") or "") or None
+    if current_report is None or not current_report.is_file():
+        return HumanReviewCompletion(marker, False, "export_report_missing", completed_at)
+    try:
+        recorded_report = Path(str(data["export_report"])).expanduser().resolve()
+        recorded_mtime = int(data["export_report_mtime_ns"])
+        current_mtime = current_report.stat().st_mtime_ns
+    except (KeyError, OSError, TypeError, ValueError):
+        return HumanReviewCompletion(marker, False, "marker_invalid", completed_at, current_report)
+    if recorded_report != current_report.resolve() or recorded_mtime != current_mtime:
+        return HumanReviewCompletion(marker, False, "export_report_changed", completed_at, current_report)
+    return HumanReviewCompletion(marker, True, "valid", completed_at, current_report)
+
+
+def mark_scene_human_review_complete(project_root: Path, scene_dir: Path) -> Path:
+    """Persist a full-sequence human Review marker bound to the current export."""
+    root = Path(project_root).expanduser().resolve()
+    scene = Path(scene_dir).expanduser().resolve()
+    _manifest, split = find_scene_manifest(root, scene.name)
+    report = _scene_export_report(root, scene.name, split)
+    if report is None or not report.is_file():
+        raise FileNotFoundError("当前场次没有YOLO导出报告，不能标记人工Review完成")
+    summary = load_export_summary(report)
+    if summary is None:
+        raise ValueError("当前场次导出报告无有效逐帧统计，不能标记人工Review完成")
+    marker = _human_review_marker_path(scene)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "scene": scene.name,
+        "class_name": scene.parent.name,
+        "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "export_report": str(report.resolve()),
+        "export_report_mtime_ns": report.stat().st_mtime_ns,
+        "frame_status_counts": {
+            "accepted": summary.accepted,
+            "review": summary.review,
+            "rejected": summary.rejected,
+        },
+    }
+    temporary = marker.with_suffix(marker.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(marker)
+    return marker
+
+
+def clear_scene_human_review_complete(scene_dir: Path) -> bool:
+    """Remove one scene's explicit human Review marker without touching data."""
+    marker = _human_review_marker_path(scene_dir)
+    if not marker.exists():
+        return False
+    marker.unlink()
+    return True
+
+
 def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowState:
     """Calculate a scene state solely from files, never from stale GUI flags."""
     root = Path(project_root).expanduser().resolve()
@@ -253,6 +345,7 @@ def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowSt
     progress = load_mask_progress(segments) if segments.is_file() else MaskProgress((), 0, 0)
     report_path = _scene_export_report(root, scene_name, split)
     export = load_export_summary(report_path) if report_path else None
+    review_completion = load_scene_human_review_completion(root, scene)
 
     common = dict(
         scene_name=scene_name,
@@ -297,21 +390,27 @@ def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowSt
             **common, group="keyframes_complete", code="pending_export", color="blue",
             detail=f"{paired_frames} 对 RGB-D；关键帧 {progress.completed_required}/{progress.total_required}；待 SAM2 传播",
         )
-    counts = dict(accepted=export.accepted, review=export.review, rejected=export.rejected)
+    reviewed_group = "human_reviewed" if review_completion.valid else "keyframes_complete"
+    counts = dict(
+        accepted=export.accepted,
+        review=export.review,
+        rejected=export.rejected,
+        human_review_complete=review_completion.valid,
+    )
     if export.accepted <= 0:
         return SceneWorkflowState(
-            **common, **counts, group="keyframes_complete", code="export_failed", color="red",
+            **common, **counts, group=reviewed_group, code="export_failed", color="red",
             detail=(f"{paired_frames} 对 RGB-D；关键帧 {progress.completed_required}/{progress.total_required}；"
                     f"自动处理失败：accepted 0，rejected {export.rejected}"),
         )
     if export.needs_review:
         return SceneWorkflowState(
-            **common, **counts, group="keyframes_complete", code="export_needs_review", color="yellow",
+            **common, **counts, group=reviewed_group, code="export_needs_review", color="yellow",
             detail=(f"accepted {export.accepted} / review {export.review} / rejected {export.rejected}；"
                     "仅 accepted 可进入数据集"),
         )
     return SceneWorkflowState(
-        **common, **counts, group="keyframes_complete", code="dataset_ready", color="green",
+        **common, **counts, group=reviewed_group, code="dataset_ready", color="green",
         detail=f"accepted {export.accepted}；可用于 {split} 数据集",
     )
 
