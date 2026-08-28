@@ -6,13 +6,17 @@ import argparse
 import json
 import time
 from pathlib import Path
+import sys
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from atec_pipeline.object_config import is_supported_class_prefix, load_class_map
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-OFFICIAL_CLASSES = {
-    0: "can", 1: "watermelon_rind", 2: "meal_box", 3: "red_paper_bag",
-    4: "blue_bin", 5: "green_bin", 6: "red_bin",
-}
+OFFICIAL_CLASSES = load_class_map(ROOT / "configs" / "atec_objects.yaml")
 
 
 def parse_model(value: str) -> tuple[str, Path]:
@@ -57,20 +61,25 @@ def sync_cuda(device: str) -> None:
         torch.cuda.synchronize()
 
 
+def validated_model_names(model: Any) -> dict[int, str]:
+    names = normalize_names(getattr(model, "names", {}))
+    if not is_supported_class_prefix(names, OFFICIAL_CLASSES):
+        raise RuntimeError(f"候选模型类别不是当前9类配置的连续前缀: {names}")
+    return names
+
+
 def validate_metrics(model: Any, data: Path, device: str, imgsz: int) -> dict[str, Any]:
     metrics = model.val(data=str(data), split="val", device=device, imgsz=imgsz, plots=False, verbose=False)
-    names = normalize_names(getattr(model, "names", {}))
-    if names != OFFICIAL_CLASSES:
-        raise RuntimeError(f"候选模型不是固定7类: {names}")
+    names = validated_model_names(model)
     seg = getattr(metrics, "seg", None)
     if seg is None:
         raise RuntimeError("Ultralytics验证结果没有seg指标")
     metric_index = {int(class_id): index for index, class_id in enumerate(seg.ap_class_index)}
-    missing_val_classes = [name for class_id, name in OFFICIAL_CLASSES.items() if class_id not in metric_index]
+    missing_val_classes = [name for class_id, name in names.items() if class_id not in metric_index]
     if missing_val_classes:
         raise RuntimeError(f"真实val缺少正式类别，无法比较每类召回: {missing_val_classes}")
     per_class = {}
-    for class_id, class_name in OFFICIAL_CLASSES.items():
+    for class_id, class_name in names.items():
         precision, recall, map50, map5095 = seg.class_result(metric_index[class_id])
         per_class[class_name] = {
             "precision": float(precision), "recall": float(recall),
@@ -85,9 +94,10 @@ def validate_metrics(model: Any, data: Path, device: str, imgsz: int) -> dict[st
 
 
 def distractor_metrics(model: Any, files: list[Path], device: str, imgsz: int, conf: float) -> dict[str, Any]:
+    model_names = validated_model_names(model)
     false_instances = 0
     frames_with_false_positive = 0
-    per_class = {name: 0 for name in OFFICIAL_CLASSES.values()}
+    per_class = {name: 0 for name in model_names.values()}
     for result in model.predict(
         source=[str(p) for p in files], device=device, imgsz=imgsz, conf=conf,
         stream=True, verbose=False, save=False,
@@ -98,7 +108,7 @@ def distractor_metrics(model: Any, files: list[Path], device: str, imgsz: int, c
         frames_with_false_positive += int(count > 0)
         if boxes is not None:
             for class_id in boxes.cls.detach().cpu().numpy().tolist():
-                per_class[OFFICIAL_CLASSES[int(class_id)]] += 1
+                per_class[model_names[int(class_id)]] += 1
     total = len(files)
     return {
         "frames": total,

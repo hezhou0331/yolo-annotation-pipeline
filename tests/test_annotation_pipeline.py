@@ -147,6 +147,19 @@ def main():
     assert dataset_yaml['val'] == 'images/val', dataset_yaml
     assert 'test' not in dataset_yaml, 'val must not be advertised as an independent test split'
 
+    # Historical seven-class manifests may export into a dataset already upgraded
+    # to the current nine-class schema, but must never downgrade its names.
+    dataset_yaml['names'][7] = 'purple_paper_bag'
+    dataset_yaml['names'][8] = 'sand_bottle'
+    (project_output / 'dataset.yaml').write_text(
+        yaml.safe_dump(dataset_yaml, allow_unicode=True, sort_keys=False), encoding='utf-8'
+    )
+    run([sys.executable, ROOT / 'tools/annotate_multinstance_project.py', '--manifest', manifest_path, '--skip-tracking'])
+    upgraded_dataset = yaml.safe_load((project_output / 'dataset.yaml').read_text(encoding='utf-8'))
+    assert len(upgraded_dataset['names']) == 9, upgraded_dataset
+    assert upgraded_dataset['names'][7] == 'purple_paper_bag', upgraded_dataset
+    assert upgraded_dataset['names'][8] == 'sand_bottle', upgraded_dataset
+
     # Human review is persisted beside the source scene and must survive a full
     # tracker/export rerun. It may promote a valid mask, but never invent one.
     manual_review = scene / 'project_reports/manual_mask_review/a.json'

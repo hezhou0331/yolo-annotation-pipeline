@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 from pathlib import Path
+import sys
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-CLASSES = {0: "can", 1: "watermelon_rind", 2: "meal_box", 3: "red_paper_bag", 4: "blue_bin", 5: "green_bin", 6: "red_bin"}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from atec_pipeline.object_config import load_class_map
+CLASSES = load_class_map(ROOT / "configs" / "atec_objects.yaml")
 
 
 def parse_args():
@@ -59,10 +63,8 @@ def main():
 
     instances = []
     defaults = []
-    object_trackers = {
-        0: args.can_tracker, 1: "sam2", 2: "sam2", 3: "sam2",
-        4: "sam2", 5: "sam2", 6: "sam2",
-    }
+    object_trackers = {class_id: "sam2" for class_id in CLASSES}
+    object_trackers[0] = args.can_tracker
     if args.only_class:
         selected_class_ids = {next(class_id for class_id, name in CLASSES.items() if name == args.only_class)}
         for class_id in selected_class_ids:
@@ -97,7 +99,6 @@ def main():
         "project": {
             "scene": portable(scene), "output": portable(root / "datasets" / "atec_yolo11_seg"),
             "foundationpose_dir": portable(ROOT / "third_party/FoundationPose"),
-            "sam2_python": "~/miniforge3/envs/yolo11/bin/python",
             "sam2_model": portable(ROOT / "models/sam2.1_t.pt"), "sam2_device": 0, "sam2_imgsz": 640,
             "sam2_memory_update_interval": 5,
             "sam2_auto_reregister": True, "sam2_auto_reregister_after_failures": 1,
@@ -125,7 +126,6 @@ def main():
         "instances": instances,
     }
     manifest_path.write_text(yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    shutil.copy2(ROOT / "configs" / "atec_objects.yaml", root / "atec_objects.yaml")
     print(f"项目已创建：{root}")
     print(f"采集目录：{scene}")
     print(f"manifest：{manifest_path}")

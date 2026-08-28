@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/download_atec_data.sh"
 [[ -x "$SCRIPT" ]]
 urls="$($SCRIPT --print-url)"
-expected=$'https://github.com/hezhou0331/yolo-annotation-pipeline/releases/download/data-20260824/atec-real-data-20260824.tar.zst.part-aa\nhttps://github.com/hezhou0331/yolo-annotation-pipeline/releases/download/data-20260824/atec-real-data-20260824.tar.zst.part-ab'
+expected=$'https://github.com/hezhou0331/yolo-annotation-pipeline/releases/download/data-20260826/atec-real-data-20260826.tar.zst.part-aa\nhttps://github.com/hezhou0331/yolo-annotation-pipeline/releases/download/data-20260826/atec-real-data-20260826.tar.zst.part-ab\nhttps://github.com/hezhou0331/yolo-annotation-pipeline/releases/download/data-20260826/atec-real-data-20260826.tar.zst.part-ac'
 [[ "$urls" == "$expected" ]]
 $SCRIPT --help | grep -q -- "--force"
 $SCRIPT --help | grep -q -- "分卷"
@@ -27,8 +27,9 @@ while [[ $# -gt 0 ]]; do
 done
 case "$url" in
   *.part-aa) printf 'hello ' > "$out" ;;
-  *.part-ab) printf 'world' > "$out" ;;
-  *.sha256) printf 'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  atec-real-data-20260824.tar.zst\n' > "$out" ;;
+  *.part-ab) printf 'wor' > "$out" ;;
+  *.part-ac) printf 'ld' > "$out" ;;
+  *.sha256) printf 'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  atec-real-data-20260826.tar.zst\n' > "$out" ;;
   *) exit 3 ;;
 esac
 CURL

@@ -23,6 +23,12 @@ import numpy as np
 import yaml
 
 WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.object_config import merge_compatible_class_maps, normalize_class_map
+from atec_pipeline.path_compat import infer_project_root, portable_path, resolve_compatible_path
+from atec_pipeline.runtime import resolve_sam2_python
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,10 +46,12 @@ def resolve_path(value: str | Path | None, base: Path, required: bool = False) -
         if required:
             raise ValueError("缺少必填路径")
         return None
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = base / path
-    return path.resolve()
+    return resolve_compatible_path(
+        value,
+        base=base,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(base, repository_root=WORKSPACE),
+    )
 
 
 def safe_name(value: str) -> str:
@@ -166,8 +174,9 @@ def run_tracker(
     elif tracker == "sam2":
         key_mask_dir = resolve_path(instance.get("key_mask_dir") or instance.get("registration_mask_dir"), manifest_dir, required=True)
         generated_mask_dir = stage / "_sam2_masks"
-        default_python = Path.home() / "miniforge3" / "envs" / "yolo11" / "bin" / "python"
-        sam2_python = resolve_path(common.get("sam2_python", default_python), manifest_dir, required=True)
+        sam2_python = resolve_sam2_python(
+            common.get("sam2_python"), manifest_dir=manifest_dir
+        )
         sam2_model = resolve_path(common.get("sam2_model", WORKSPACE / "models" / "sam2.1_t.pt"), manifest_dir, required=True)
         sam_cmd = [
             str(sam2_python), str(WORKSPACE / "tools" / "propagate_masks_sam2.py"),
@@ -297,6 +306,18 @@ def main() -> int:
     if args.dry_run:
         return 0
 
+    project_root = infer_project_root(manifest_path, repository_root=WORKSPACE)
+    report_dir = output / "project_reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    def stored(path: Path) -> str:
+        return portable_path(
+            path,
+            relative_to=report_dir,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
+
     # 根据scene帧和每个实例的start/max_frames推导“本帧应出现哪些实例”。
     # 不能只相信tracker实际写出的report，否则某实例整帧漏报会被误当成完整标注。
     rgb_files = sorted((scene / "rgb").glob("*.png"))
@@ -323,7 +344,7 @@ def main() -> int:
             "class_id": class_id,
             "class_name": instance["class_name"],
             "tracker": instance.get("tracker", "foundationpose"),
-            "stage": str(stages[instance_id]),
+            "stage": stored(stages[instance_id]),
             "status_counts": report.get("status_counts", {}),
         })
         for record in report["records"]:
@@ -415,6 +436,15 @@ def main() -> int:
         })
 
     classes = dict(sorted(classes.items()))
+    dataset_yaml_path = output / "dataset.yaml"
+    if dataset_yaml_path.is_file():
+        existing_dataset = yaml.safe_load(dataset_yaml_path.read_text(encoding="utf-8")) or {}
+        existing_names = existing_dataset.get("names") if isinstance(existing_dataset, dict) else None
+        if existing_names:
+            try:
+                classes = merge_compatible_class_maps(classes, normalize_class_map(existing_names))
+            except ValueError as exc:
+                raise SystemExit(f"现有dataset.yaml与Manifest类别冲突：{exc}") from exc
     (output / "classes.json").write_text(json.dumps({str(k): v for k, v in classes.items()}, ensure_ascii=False, indent=2), encoding="utf-8")
     for required_id in range(max(classes) + 1):
         if required_id not in classes:
@@ -426,13 +456,14 @@ def main() -> int:
     test_rel = "images/test" if test_has else None
     names_yaml = "".join(f"  {k}: {v}\n" for k, v in classes.items())
     test_yaml = f"test: {test_rel}\n" if test_rel else ""
-    (output / "dataset.yaml").write_text(
-        f"path: {output}\ntrain: images/train\nval: {val_rel}\n{test_yaml}names:\n{names_yaml}", encoding="utf-8"
+    dataset_yaml_path.write_text(
+        f"path: .\ntrain: images/train\nval: {val_rel}\n{test_yaml}names:\n{names_yaml}", encoding="utf-8"
     )
 
     counts = {s: sum(r["status"] == s for r in frame_records) for s in ("accepted", "review", "rejected")}
     project_report = {
-        "manifest": str(manifest_path), "scene": str(scene), "output": str(output), "split": split,
+        "format_version": 2,
+        "manifest": stored(manifest_path), "scene": stored(scene), "output": stored(output), "split": split,
         "capture_session_id": common.get("capture_session_id"),
         "source_video_id": common.get("source_video_id"),
         "classes": classes, "instances": all_instance_reports, "frame_status_counts": counts,
@@ -446,8 +477,6 @@ def main() -> int:
         },
         "safety_rule": "只有所有声明实例均通过质量门槛且无严重mask冲突的帧才进入正式YOLO数据集。",
     }
-    report_dir = output / "project_reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
     report_name = f"{safe_name(scene.name)}_{split}_report"
     (report_dir / f"{report_name}.json").write_text(json.dumps(project_report, ensure_ascii=False, indent=2), encoding="utf-8")
     with (report_dir / f"{report_name}.csv").open("w", encoding="utf-8-sig", newline="") as f:

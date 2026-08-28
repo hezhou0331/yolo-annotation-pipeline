@@ -373,7 +373,7 @@ def main() -> int:
     test_rel = "images/test" if test_has_images else val_rel
     names_yaml = "".join(f"  {class_id}: {name}\n" for class_id, name in classes.items())
     (output / "dataset.yaml").write_text(
-        f"path: {output}\ntrain: images/train\nval: {val_rel}\ntest: {test_rel}\nnames:\n{names_yaml}",
+        f"path: .\ntrain: images/train\nval: {val_rel}\ntest: {test_rel}\nnames:\n{names_yaml}",
         encoding="utf-8",
     )
 

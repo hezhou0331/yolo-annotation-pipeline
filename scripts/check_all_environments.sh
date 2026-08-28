@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-YOLO_PY="${YOLO_PY:-$HOME/miniforge3/envs/yolo11/bin/python}"
+YOLO_PY="${ATEC_YOLO_PY:-${ATEC_YOLO_PYTHON:-${YOLO_PY:-$HOME/miniforge3/envs/yolo11/bin/python}}}"
 
 echo "=== 磁盘 ==="
 df -h "$ROOT"

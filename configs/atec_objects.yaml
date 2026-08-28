@@ -1,6 +1,6 @@
 # ATEC 2026规则提取后的默认识别配置
 # 来源：ATEC规则260820(1).pdf，第9—20页（2026-08-23人工复核）
-version: 2
+version: 3
 
 assumptions:
   competition_group: 未确认
@@ -9,7 +9,7 @@ assumptions:
   bin_label_scope: 未确认（当前类别名保持整桶；控制端可改为桶口ROI或固定坐标）
   meal_box_label_scope: 暂按“餐盒及可见黑色内容物”作为一个实例，等待实物状态确认
   note: >-
-    当前默认启用4个核心物品类别和3个可选场景垃圾桶类别。附加宝箱任务仅对多足/多轮组开放，
+    当前启用4个核心物品类别、3个场景垃圾桶类别和2个比赛干扰类别。附加宝箱任务仅对多足/多轮组开放，
     在机器人组别和是否参赛Bonus确认前不写入正式YOLO类别。
 
 classes:
@@ -20,6 +20,8 @@ classes:
   4: blue_bin
   5: green_bin
   6: red_bin
+  7: purple_paper_bag
+  8: sand_bottle
 
 objects:
   can:
@@ -105,6 +107,26 @@ objects:
     recommended_annotation: sam2_or_manual_or_calibrated_pose
     foundationpose_fit: unnecessary
     rule_spec: *bin_spec
+  purple_paper_bag:
+    class_id: 7
+    chinese_name: 紫色袋子
+    role: competition_distractor
+    recommended_annotation: sam2
+    foundationpose_fit: poor
+    mesh_required: false
+    notes:
+      - 作为显式干扰类别标注，帮助模型区分红色纸袋与紫色袋子。
+      - 不作为空标签负样本；画面中出现时必须标出其实例Mask。
+  sand_bottle:
+    class_id: 8
+    chinese_name: 沙瓶
+    role: competition_distractor
+    recommended_annotation: sam2
+    foundationpose_fit: conditional
+    mesh_required: false
+    notes:
+      - 作为显式干扰类别标注，帮助模型区分易拉罐、普通瓶和比赛沙瓶。
+      - 首版继续使用SAM2传播和人工Review，不要求CAD或FoundationPose。
 
 scene_rules:
   object_sets_per_match: 3
@@ -126,9 +148,9 @@ bonus_classes:
   enabled: false
   eligibility: 仅多足/多轮组，需用户确认
   proposed_if_enabled:
-    7: treasure_chest
-    8: treasure
-    9: treasure_drop_zone
+    9: treasure_chest
+    10: treasure
+    11: treasure_drop_zone
 
 annotation_policy:
   accepted_to_training: true

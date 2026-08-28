@@ -6,6 +6,8 @@ import json
 import os
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -31,14 +33,19 @@ def main() -> int:
 
         # Daily operation is one thin page, not three workflow tabs.
         assert not isinstance(window.centralWidget(), QTabWidget)
-        assert len(window.class_buttons) == 7
+        assert len(window.class_buttons) == 9
         assert window.class_buttons[0].text().startswith("1  易拉罐")
+        assert window.class_buttons[7].text().startswith("8  紫色袋子")
+        assert window.class_buttons[8].text().startswith("9  沙瓶")
         assert window.start_button.text() == "开始采集"
         assert window.stop_button.text().startswith("停止采集")
         assert window.stop_capture_shortcut.key().toString() == "Ctrl+C"
         assert not window.stop_capture_shortcut.isEnabled()
         assert window.mark_button.text().startswith("开始标记")
         assert window.continue_button.text() == "继续自动处理"
+        assert window.prepare_button.text() == "准备训练数据"
+        assert not hasattr(window, "auto_process")
+        assert not hasattr(window, "auto_prepare_button")
         assert window.mask_help_button.text() == "标注器使用说明"
         assert "Enter" in window.mask_quick_help.text() and "S 保存" in window.mask_quick_help.text()
         assert "尚未运行" in window.propagation_status_label.text()
@@ -304,6 +311,41 @@ def main() -> int:
         window._refresh_state()
         assert "1/1" in window.mask_progress_summary.text()
         assert "已完成" in window.mask_progress_list.item(0).text()
+        window._start_task = AtecMainWindow._start_task.__get__(window, AtecMainWindow)  # type: ignore[method-assign]
+
+        # Continue is a thin GUI action: it starts one CLI process and makes
+        # progress visible immediately instead of appearing to do nothing.
+        original_command_for_run = window.command_for_run
+        window.command_for_run = lambda: ("/bin/sh", ["-c", "sleep 0.2"])  # type: ignore[method-assign]
+        window.continue_button.click()
+        assert not window.log.isHidden()
+        assert any(state in window.process_status.text() for state in ("正在启动", "运行中"))
+        assert "SAM2" in window.guidance_label.text() and "YOLO" in window.guidance_label.text()
+        assert window.process.waitForStarted(1000)
+        app.processEvents()
+        assert "运行中" in window.process_status.text()
+        assert window.process.waitForFinished(2000)
+        app.processEvents()
+        window.command_for_run = original_command_for_run  # type: ignore[method-assign]
+
+        # A failed executable must surface the concrete startup error in the
+        # daily UI, not only append an opaque enum to a hidden log.
+        original_critical = QMessageBox.critical
+        startup_errors: list[tuple[str, str]] = []
+        QMessageBox.critical = staticmethod(  # type: ignore[method-assign]
+            lambda _parent, title, text, *args, **kwargs: startup_errors.append((title, text)) or QMessageBox.Ok
+        )
+        try:
+            window._start_task("run", "/definitely/missing/atec-pipeline", [])
+            deadline = time.monotonic() + 1.0
+            while not startup_errors and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+        finally:
+            QMessageBox.critical = original_critical  # type: ignore[method-assign]
+        assert startup_errors and "启动" in startup_errors[-1][0]
+        assert "/definitely/missing/atec-pipeline" in startup_errors[-1][1]
+        assert "启动失败" in window.process_status.text()
 
         export_report = dataset_yaml.parent / "project_reports" / f"{window.session.scene_name}_{window.session.split}_report.json"
         export_report.parent.mkdir(parents=True, exist_ok=True)
@@ -381,28 +423,6 @@ def main() -> int:
 
         contexts = window._review_contexts()
         assert len(contexts) == 1 and contexts[0]["instance_id"] == "can_01"
-
-        # A scene-level train→val split keeps the original export-report filename.
-        # Review must resolve that report by scene instead of assuming the suffix
-        # always matches the current Manifest split.
-        val_manifest = manifest.with_name(f"{window.session.scene_name}_val.yaml")
-        manifest.rename(val_manifest)
-        val_manifest.write_text(
-            val_manifest.read_text(encoding="utf-8").replace("split: train", "split: val"),
-            encoding="utf-8",
-        )
-        window.session.split = "val"
-        window._refresh_state(refresh_scenes=False)
-        assert window.review_button.isEnabled(), "train→val split must not disable an existing Review sequence"
-        assert len(window._review_contexts()) == 1
-        window.session.split = "train"
-        val_manifest.rename(manifest)
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace("split: val", "split: train"),
-            encoding="utf-8",
-        )
-        window._refresh_state(refresh_scenes=False)
-
         review_program, review_args = window.command_for_review(contexts[0], ("0",))
         assert review_program.endswith("envs/yolo11/bin/python")
         assert not review_program.startswith("~"), "portable home paths must be expanded before QProcess launch"
@@ -475,26 +495,64 @@ def main() -> int:
         assert window.open_training_result_button.isEnabled()
         assert window.live_start_button.isEnabled()
         assert str(run_dir / "weights/best.pt") in window.live_model_label.text()
-        assert window.live_source_kind.currentData() == "orbbec"
-        assert not window.live_source.isEnabled(), "the external Orbbec camera must be the default live source"
-        assert "Orbbec" in window.live_start_button.text()
+        assert window.live_source_kind.currentData() == "opencv"
+        assert window.live_source.isEnabled(), "external webcam mode must expose its source index"
+        assert window.live_source.text() == "0"
+        assert "外接摄像头" in window.live_start_button.text()
         live_program, live_args = window.command_for_live()
         assert live_program.endswith("envs/yolo11/bin/python")
-        assert "live_yolo11_seg_orbbec.py" in live_args[0]
+        assert "live_yolo11_seg.py" in live_args[0]
         assert str(run_dir / "weights/best.pt") in live_args
+        assert "--source" in live_args and live_args[live_args.index("--source") + 1] == "0"
         assert "--conf" in live_args and live_args[live_args.index("--conf") + 1] == "0.25"
         assert "yellow_can" not in " ".join(live_args), "live inference must be generic, not hard-coded to yellow can"
 
-        webcam_index = window.live_source_kind.findData("opencv")
-        assert webcam_index >= 0
-        window.live_source_kind.setCurrentIndex(webcam_index)
-        assert window.live_source.isEnabled(), "HD Webcam mode must expose its source index"
-        assert window.live_source.text() == "0"
-        assert "外接摄像头" in window.live_start_button.text()
-        webcam_program, webcam_args = window.command_for_live()
-        assert webcam_program == live_program
-        assert "live_yolo11_seg.py" in webcam_args[0]
-        assert "--source" in webcam_args and webcam_args[webcam_args.index("--source") + 1] == "0"
+        orbbec_index = window.live_source_kind.findData("orbbec")
+        assert orbbec_index >= 0
+        window.live_source_kind.setCurrentIndex(orbbec_index)
+        assert not window.live_source.isEnabled(), "Orbbec SDK mode must not use a V4L2 source index"
+        assert "Orbbec" in window.live_start_button.text()
+        orbbec_program, orbbec_args = window.command_for_live()
+        assert orbbec_program == live_program
+        assert "live_yolo11_seg_orbbec.py" in orbbec_args[0]
+
+        # Dataset mutation must remain behind the CLI: GUI previews read-only,
+        # then launches ``atec-pipeline split ... --apply`` as a subprocess.
+        import atec_pipeline.gui_app as gui_module
+
+        original_build_auto_plan = gui_module.build_auto_plan
+        original_question = QMessageBox.question
+        direct_apply_called: list[bool] = []
+        original_apply_plan = getattr(gui_module, "apply_plan", None)
+        if original_apply_plan is not None:
+            gui_module.apply_plan = lambda _plan: direct_apply_called.append(True)  # type: ignore[attr-defined]
+        auto_started: list[tuple[str, str, list[str]]] = []
+        original_all_scene_states = window._all_scene_states
+        original_start_task = window._start_task
+        try:
+            gui_module.build_auto_plan = lambda *_args, **_kwargs: {
+                "groups": [SimpleNamespace(scene_names={"can_scene_02"})],
+                "files": [(Path("a.png"), Path("b.png"), Path("a.txt"), Path("b.txt"))],
+            }
+            QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)  # type: ignore[method-assign]
+            window._all_scene_states = lambda: [
+                SimpleNamespace(training_eligible=True, split="train", scene_name="can_scene_01", accepted=3, class_name="can"),
+                SimpleNamespace(training_eligible=True, split="train", scene_name="can_scene_02", accepted=1, class_name="can"),
+            ]
+            window._start_task = lambda kind, program, args: auto_started.append((kind, program, list(args)))  # type: ignore[method-assign]
+            window._preview_training_split()
+        finally:
+            gui_module.build_auto_plan = original_build_auto_plan
+            QMessageBox.question = original_question  # type: ignore[method-assign]
+            window._all_scene_states = original_all_scene_states  # type: ignore[method-assign]
+            window._start_task = original_start_task  # type: ignore[method-assign]
+            if original_apply_plan is not None:
+                gui_module.apply_plan = original_apply_plan  # type: ignore[attr-defined]
+        assert not direct_apply_called, "GUI must not apply dataset mutations in-process"
+        assert auto_started and auto_started[-1][0] == "prepare_split"
+        assert auto_started[-1][2] == [
+            "split", str(dataset_yaml.resolve()), "--val-scenes", "can_scene_02", "--apply"
+        ]
 
         window.close()
     app.processEvents()

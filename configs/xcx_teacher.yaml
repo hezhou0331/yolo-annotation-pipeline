@@ -1,15 +1,6 @@
 version: 1
 purpose: xcx检测模型仅用于真实视频关键帧候选框、SAM2提示和干扰物发现，不生成最终真值
 
-official_classes:
-  0: can
-  1: watermelon_rind
-  2: meal_box
-  3: red_paper_bag
-  4: blue_bin
-  5: green_bin
-  6: red_bin
-
 source_to_official:
   yellow_can: can
   watermelon_rind: watermelon_rind
@@ -18,10 +9,10 @@ source_to_official:
   blue_trash_bin: blue_bin
   green_trash_bin: green_bin
   red_trash_bin: red_bin
+  purple_paper_bag: purple_paper_bag
 
 hard_negative_classes:
   - plastic_bottle
-  - purple_paper_bag
   - dry_leaf
   - non_target_can
   - non_target_bottle
@@ -33,7 +24,7 @@ detectors:
   - name: robot_objects
     weights: ../xcx/checkpoint/robot_detector_yolo11s_640_luna1600_final.pt
     proposal_source: true
-    allowed_official_classes: [can, watermelon_rind, meal_box, red_paper_bag]
+    allowed_official_classes: [can, watermelon_rind, meal_box, red_paper_bag, purple_paper_bag]
   - name: trash_bins
     weights: ../xcx/checkpoint/trash_bins_yolo11s_640_final.pt
     proposal_source: true

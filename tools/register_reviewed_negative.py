@@ -5,9 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import yaml
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.path_compat import infer_project_root, resolve_compatible_path
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -28,9 +35,12 @@ def main() -> int:
     args = parse_args()
     data_path = args.data.expanduser().resolve()
     data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
-    root = Path(data.get("path", data_path.parent)).expanduser()
-    if not root.is_absolute():
-        root = (data_path.parent / root).resolve()
+    root = resolve_compatible_path(
+        data.get("path", data_path.parent),
+        base=data_path.parent,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(data_path, repository_root=WORKSPACE),
+    )
     image = args.image.expanduser().resolve()
     if not image.is_file() or image.suffix.lower() not in IMAGE_SUFFIXES:
         raise SystemExit(f"源图片不存在或格式不支持: {image}")

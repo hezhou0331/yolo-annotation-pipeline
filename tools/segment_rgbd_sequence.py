@@ -10,10 +10,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
 import yaml
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.path_compat import infer_project_root, portable_path, resolve_compatible_path
 
 
 def parse_args():
@@ -58,7 +65,7 @@ def mask_exists(root: Path | None, instance: str, stem: str, key_dirs: dict[str,
         if candidate.exists():
             mask = cv2.imread(str(candidate), cv2.IMREAD_GRAYSCALE)
             if mask is not None and np.any(mask > 0):
-                return str(candidate.resolve())
+                return candidate.resolve()
     return None
 
 
@@ -69,23 +76,43 @@ def main():
     if manifest_path:
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         base = manifest_path.parent
-        scene = Path(manifest["project"]["scene"]).expanduser()
-        if not scene.is_absolute():
-            scene = base / scene
-        scene = scene.resolve()
+        project_root = infer_project_root(manifest_path, repository_root=WORKSPACE)
+        scene = resolve_compatible_path(
+            manifest["project"]["scene"],
+            base=base,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
         if not args.instances:
             args.instances = [str(x["instance_id"]) for x in manifest.get("instances", [])]
         for instance in manifest.get("instances", []):
             value = instance.get("key_mask_dir") or instance.get("registration_mask_dir")
             if value:
-                path = Path(value).expanduser()
-                if not path.is_absolute():
-                    path = base / path
-                key_dirs[str(instance["instance_id"])] = path.resolve()
+                key_dirs[str(instance["instance_id"])] = resolve_compatible_path(
+                    value,
+                    base=base,
+                    repository_root=WORKSPACE,
+                    project_root=project_root,
+                )
     else:
         scene = args.scene.expanduser().resolve()
-    output = (args.output or scene / "segments.json").expanduser().resolve()
-    root = args.registration_root.expanduser().resolve() if args.registration_root else None
+        project_root = infer_project_root(scene, repository_root=WORKSPACE)
+    output = resolve_compatible_path(
+        args.output or scene / "segments.json",
+        base=Path.cwd(),
+        repository_root=WORKSPACE,
+        project_root=project_root,
+    )
+    root = (
+        resolve_compatible_path(
+            args.registration_root,
+            base=Path.cwd(),
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
+        if args.registration_root
+        else None
+    )
     rgb_files = sorted((scene / "rgb").glob("*.png"))
     if not rgb_files:
         raise SystemExit(f"没有RGB帧：{scene / 'rgb'}")
@@ -143,7 +170,7 @@ def main():
         if idx in boundaries:
             last_boundary = idx
         frame_info.append({
-            "index": idx, "id": stem, "rgb": str(rgb_path), "depth": str(depth_path),
+            "index": idx, "id": stem, "rgb": rgb_path, "depth": depth_path,
             "timestamp_ms": ts, "visual_diff": diff,
             "depth_valid_ratio": depth_valid_ratio, "warnings": reasons,
         })
@@ -159,7 +186,7 @@ def main():
             target_dir = key_dirs.get(instance) if key_dirs else None
             if target_dir is None and root is not None:
                 target_dir = root / instance
-            required_key_mask_paths[instance] = str((target_dir / f"{start_stem}.png").resolve()) if target_dir else None
+            required_key_mask_paths[instance] = (target_dir / f"{start_stem}.png").resolve() if target_dir else None
         missing = [instance for instance, path in key_masks.items() if path is None]
         bad_frames = [f["id"] for f in frame_info[start:end + 1] if f["warnings"]]
         segments.append({
@@ -171,9 +198,30 @@ def main():
             "frames_with_capture_warnings": bad_frames,
         })
 
+    report_base = output.parent
+
+    def stored(path: Path | None) -> str | None:
+        if path is None:
+            return None
+        return portable_path(
+            path,
+            relative_to=report_base,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
+
+    for frame in frame_info:
+        frame["rgb"] = stored(frame["rgb"])
+        frame["depth"] = stored(frame["depth"])
+    for segment in segments:
+        segment["key_masks"] = {instance: stored(path) for instance, path in segment["key_masks"].items()}
+        segment["required_key_mask_paths"] = {
+            instance: stored(path) for instance, path in segment["required_key_mask_paths"].items()
+        }
+
     report = {
-        "format_version": 1, "scene": str(scene), "manifest": str(manifest_path) if manifest_path else None, "frame_count": len(rgb_files),
-        "instances": args.instances, "registration_root": str(root) if root else None,
+        "format_version": 2, "scene": stored(scene), "manifest": stored(manifest_path), "frame_count": len(rgb_files),
+        "instances": args.instances, "registration_root": stored(root),
         "parameters": {
             "max_segment_frames": args.max_segment_frames,
             "scene_cut_threshold": args.scene_cut_threshold,

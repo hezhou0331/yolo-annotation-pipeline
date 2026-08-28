@@ -14,9 +14,16 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 from typing import Any
 
 import yaml
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.path_compat import infer_project_root, resolve_compatible_path
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 ACCEPTED_STATUSES = {"accepted"}
@@ -77,9 +84,12 @@ def _load_dataset(dataset: Path) -> tuple[Path, dict[str, Any]]:
     if not dataset.is_file():
         raise ValueError(f"dataset.yaml不存在: {dataset}")
     data = yaml.safe_load(dataset.read_text(encoding="utf-8")) or {}
-    root = Path(data.get("path", dataset.parent)).expanduser()
-    if not root.is_absolute():
-        root = (dataset.parent / root).resolve()
+    root = resolve_compatible_path(
+        data.get("path", dataset.parent),
+        base=dataset.parent,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(dataset, repository_root=WORKSPACE),
+    )
     return root, data
 
 
@@ -108,9 +118,15 @@ def _read_report(path: Path) -> ReportRecord | None:
     for instance in data.get("instances") or []:
         if isinstance(instance, dict) and str(instance.get("class_name", "")).strip():
             class_names.add(str(instance["class_name"]).strip())
+    scene = resolve_compatible_path(
+        str(data["scene"]),
+        base=path.parent,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(path, repository_root=WORKSPACE),
+    )
     return ReportRecord(
         path=path,
-        scene=str(data.get("scene")),
+        scene=str(scene),
         split=str(data.get("split", "train")),
         capture_session_id=str(data["capture_session_id"]) if data.get("capture_session_id") else None,
         source_video_id=str(data["source_video_id"]) if data.get("source_video_id") else None,

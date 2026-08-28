@@ -45,8 +45,8 @@ def main() -> int:
         assert (second_target / "rgb/000002.png").read_bytes() == b"keep-second"
         assert not scene.exists()
         assert not second_scene.exists()
-        assert str(target.resolve()) in manifest.read_text(encoding="utf-8")
-        assert str(second_target.resolve()) in second_manifest.read_text(encoding="utf-8")
+        assert "scene: ../data/scenes/can/yellow_can_train_01" in manifest.read_text(encoding="utf-8")
+        assert "scene: ../data/scenes/can/can_train_01" in second_manifest.read_text(encoding="utf-8")
         assert not scan(root), "already-migrated class directories must not be rescanned as scenes"
 
         conflict = root / "data/scenes/can/yellow_can_test_01"

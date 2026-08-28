@@ -8,9 +8,16 @@ import json
 from pathlib import Path
 import re
 import shutil
+import sys
 from typing import Iterable
 
 import yaml
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.path_compat import infer_project_root, portable_path, resolve_compatible_path
 
 CLASS_PREFIXES = (
     ("watermelon_rind", "watermelon_rind"),
@@ -41,8 +48,12 @@ def infer_class(scene_name: str) -> str | None:
 
 
 def _resolve_scene(manifest_path: Path, value: str) -> Path:
-    raw = Path(value).expanduser()
-    return (manifest_path.parent / raw).resolve() if not raw.is_absolute() else raw.resolve()
+    return resolve_compatible_path(
+        value,
+        base=manifest_path.parent,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(manifest_path, repository_root=WORKSPACE),
+    )
 
 
 def find_manifests(project_root: Path, source: Path) -> tuple[Path, ...]:
@@ -104,7 +115,12 @@ def _rewrite_manifest(path: Path, source: Path, target: Path) -> bool:
         match = scene_pattern.match(line.rstrip("\n"))
         if match:
             newline = "\n" if line.endswith("\n") else ""
-            value = str(target.resolve())
+            value = portable_path(
+                target,
+                relative_to=path.parent,
+                repository_root=WORKSPACE,
+                project_root=infer_project_root(path, repository_root=WORKSPACE),
+            )
             if match.group(2).strip().startswith(("'", '"')):
                 quote = match.group(2).strip()[0]
                 value = quote + value + quote
@@ -112,7 +128,12 @@ def _rewrite_manifest(path: Path, source: Path, target: Path) -> bool:
             path.write_text("".join(lines), encoding="utf-8")
             return True
     # Valid YAML without a simple scene line: preserve filename and semantics via safe_dump.
-    project["scene"] = str(target.resolve())
+    project["scene"] = portable_path(
+        target,
+        relative_to=path.parent,
+        repository_root=WORKSPACE,
+        project_root=infer_project_root(path, repository_root=WORKSPACE),
+    )
     data["project"] = project
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return True

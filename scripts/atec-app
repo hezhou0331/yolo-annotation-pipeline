@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_PY="${ATEC_APP_PY:-/usr/bin/python3}"
 cd "$ROOT"
 
 # The launcher may be called from an activated Orbbec/Conda/ROS/Snap shell.
@@ -17,4 +18,9 @@ unset LD_PRELOAD
 unset GTK_PATH
 unset GTK_EXE_PREFIX
 
-exec /usr/bin/python3 -m atec_pipeline.gui_app "$@"
+if [[ ! -x "$APP_PY" ]]; then
+  echo "App Python 不可执行: $APP_PY" >&2
+  exit 2
+fi
+
+exec "$APP_PY" -m atec_pipeline.gui_app "$@"

@@ -13,7 +13,7 @@ LAUNCHER = ROOT / "scripts/atec-app"
 
 def main() -> int:
     source = LAUNCHER.read_text(encoding="utf-8")
-    python_exec = 'exec /usr/bin/python3 -m atec_pipeline.gui_app "$@"'
+    python_exec = 'exec "$APP_PY" -m atec_pipeline.gui_app "$@"'
     assert python_exec in source, "launcher entry point changed; update this regression test"
 
     # Execute the launcher's real environment-cleanup statements, but print the

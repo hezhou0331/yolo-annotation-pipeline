@@ -395,7 +395,7 @@ def main() -> int:
     names_yaml = "".join(f"  {class_id}: {name}\n" for class_id, name in classes.items())
     dataset_yaml = output / "dataset.yaml"
     yaml_text = (
-        f"path: {output}\n"
+        "path: .\n"
         "train: images/train\n"
         f"val: {val_rel}\n"
         f"test: {test_rel}\n"

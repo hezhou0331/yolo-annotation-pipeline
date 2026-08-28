@@ -29,7 +29,7 @@ def main() -> int:
         env = os.environ.copy()
         env.update(
             {
-                "ATEC_YOLO_PYTHON": str(fake_python),
+                "ATEC_YOLO_PY": str(fake_python),
                 "ATEC_YOLO_MODEL": str(fake_model),
             }
         )

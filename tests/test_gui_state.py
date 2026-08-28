@@ -37,11 +37,14 @@ from atec_pipeline.gui_state import (  # noqa: E402
 
 def main() -> int:
     classes = load_object_classes(ROOT / "configs/atec_objects.yaml")
-    assert len(classes) == 7
+    assert len(classes) == 9
     assert classes[0].name == "can" and classes[0].chinese_name == "易拉罐"
     assert classes[6].name == "red_bin" and classes[6].class_id == 6
+    assert classes[7].name == "purple_paper_bag" and classes[7].chinese_name == "紫色袋子"
+    assert classes[8].name == "sand_bottle" and classes[8].chinese_name == "沙瓶"
     assert scene_for_number(classes, 1).name == "can"
     assert scene_for_number(classes, 7).name == "red_bin"
+    assert scene_for_number(classes, 9).name == "sand_bottle"
 
     summary_states = [
         SceneWorkflowState(
@@ -395,6 +398,14 @@ def main() -> int:
         assert marker_data["scene"] == "state_scene"
         assert marker_data["class_name"] == "can"
         assert marker_data["frame_status_counts"] == {"accepted": 1, "review": 0, "rejected": 0}
+        assert marker_data["schema_version"] == 2
+        recorded_report = Path(marker_data["export_report"])
+        assert not recorded_report.is_absolute()
+        assert (marker.parent / recorded_report).resolve() == state_report.resolve()
+        legacy_marker = dict(marker_data)
+        legacy_marker["export_report"] = "/producer/projects/atec_real/datasets/atec_yolo11_seg/project_reports/state_scene_train_report.json"
+        marker.write_text(json.dumps(legacy_marker), encoding="utf-8")
+        assert load_scene_human_review_completion(project_root, scene).valid
 
         completion = load_scene_human_review_completion(project_root, scene)
         assert completion.valid and completion.marker_path == marker

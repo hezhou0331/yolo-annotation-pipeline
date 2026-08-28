@@ -2,19 +2,23 @@
 
 使用 Orbbec Gemini 336L 采集 RGB-D，以人工关键帧 Mask + SAM2 传播生成实例分割标签，通过质量门控导出 YOLO11-seg，并用薄桌面 App 管理采集、标注、验证、训练和实时识别。
 
-## 当前里程碑（2026-08-26）
+## 当前里程碑（2026-08-27）
 
-当前已整理出 **7 类 YOLO11-seg 数据集**；当前可直接用于实时测试的训练权重仍是 **5 类阶段模型**，不是完整七类模型：
+当前**标注配置为 9 类**。已有正式数据快照仍覆盖前 7 类，当前可直接用于实时测试的训练权重仍是 5 类阶段模型：
 
 ```text
-can
-watermelon_rind
-meal_box
-red_paper_bag
-blue_bin
-green_bin
-red_bin
+0 can
+1 watermelon_rind
+2 meal_box
+3 red_paper_bag
+4 blue_bin
+5 green_bin
+6 red_bin
+7 purple_paper_bag
+8 sand_bottle
 ```
+
+`purple_paper_bag`（紫色袋子）和 `sand_bottle`（沙瓶）是比赛干扰项，但在本项目中作为显式实例类别标注。它们目前还没有进入已发布的 train/val 数据和模型；各自拥有独立有效 train/val 场次后，才能称为完整 9 类模型。历史 7 类 Manifest、dataset 和模型仍作为当前 9 类配置的严格连续前缀兼容。
 
 当前导出数据统计（只统计正式 `train/val`，不包含 `_staging`）：
 
@@ -33,7 +37,7 @@ runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt
 类别：can、watermelon_rind、meal_box、red_paper_bag、blue_bin
 ```
 
-该权重是五类阶段模型，只能识别上述五类；它不包含 `green_bin` 和 `red_bin`。等七类数据完成统一 Review 后，再训练正式七类模型。权重不进入 Git 历史，通过 [2026-08-26 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260826) 作为可选附件提供。
+该权重是五类阶段模型，只能识别上述五类；它不包含 `green_bin`、`red_bin`、`purple_paper_bag` 或 `sand_bottle`。现有七类数据可重新训练七类阶段模型；只有新增两类也具备独立 train/val 后，才训练完整九类模型。权重不进入 Git 历史，通过 [2026-08-26 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260826) 作为可选附件提供。
 
 ## 最快开始
 
@@ -42,7 +46,7 @@ cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-app
 ```
 
-App 保持“薄 App”：负责类别选择、场次管理、后台命令和日志，不重写 Orbbec、SAM2、YOLO 或训练算法。当前支持：
+App 保持“薄 App”：负责类别选择、场次管理、后台命令和日志，不重写 Orbbec、SAM2、YOLO 或训练算法。类别来自 `configs/atec_objects.yaml`，当前为 9 类，GUI 不维护第二份硬编码列表。当前支持：
 
 - RGB-D 采集、停止、保存或丢弃；
 - 数据完整性检查与安全隔离修复；
@@ -72,7 +76,7 @@ Settings → Collaborators → Add people
 
 ```bash
 sudo apt update
-sudo apt install -y git curl zstd
+sudo apt install -y git curl zstd python3-pyqt5 python3-yaml
 ```
 
 公开仓库的克隆与数据下载不要求 GitHub 登录。只有需要推送代码时，才需要配置自己的 GitHub 账号或 SSH Key。
@@ -114,6 +118,19 @@ cd yolo-annotation-pipeline
 
 如果只是查看已有数据、运行 App 或 Review，先确保 `yolo11` 环境可用；如果要重新采集 RGB-D，还需要正确配置 `orbbec` 环境和相机 SDK。
 
+仓库迁移到任意目录后不需要修改脚本；入口会根据自身位置定位仓库根目录。若 Conda 环境不在默认位置，可统一覆盖解释器：
+
+```bash
+export ATEC_ORBBEC_PY=/path/to/orbbec/bin/python
+export ATEC_FP_PY=/path/to/foundationpose/bin/python
+export ATEC_YOLO_PY=/path/to/yolo11/bin/python
+# 可选：系统 Python 不在默认位置时
+export ATEC_APP_PY=/path/to/system/python3
+export ATEC_CLI_PY=/path/to/system/python3
+```
+
+旧的 `ATEC_ORBBEC_PYTHON`、`ATEC_FP_PYTHON` 和 `ATEC_YOLO_PYTHON` 仍兼容，但新配置统一使用较短的 `*_PY` 名称。
+
 ### 5. 启动 App
 
 ```bash
@@ -131,7 +148,7 @@ App 是薄管理层，不在界面内重复实现算法。它负责调用已有�
 → 补齐所有分段关键帧 Mask
 → SAM2 传播
 → 检查连续标注效果
-→ 自动准备 train/val
+→ 准备 train/val
 → 验证数据集
 → 训练 YOLO11
 → 摄像头实时识别
@@ -174,7 +191,7 @@ Q / Esc     退出
 
 ### 8. 准备数据、验证和训练
 
-在 App 中点击“自动准备训练数据”。程序会扫描所有类别的已保存场次，并按完整场次或采集视频切分 `train/val`，不会把同一个视频的相邻帧随机拆到两边。
+在 App 中点击“准备训练数据”。程序只汇总已有 accepted 导出的场次，并按完整场次或采集视频切分 `train/val`；未完成场次需要逐场处理，不会由后台批量推进。
 
 训练按钮只有在以下条件满足后才会启用：
 
@@ -184,7 +201,7 @@ Q / Esc     退出
 - train/val 没有相同的场次、`capture_session_id` 或 `source_video_id`；
 - 数据集验证通过。
 
-当前数据集已经包含七类，但当前可直接下载测试的权重是五类阶段性模型：
+当前已发布数据快照包含前七类，但当前可直接下载测试的权重是五类阶段性模型：
 
 ```text
 can
@@ -194,7 +211,7 @@ red_paper_bag
 blue_bin
 ```
 
-它不是完整七类模型；`green_bin` 和 `red_bin` 需要等七类统一训练后才能由同一个模型识别。
+它不是七类或九类完整模型；`green_bin`、`red_bin` 需要重新训练七类阶段模型，紫色袋子和沙瓶还必须先补齐独立 train/val 数据。
 
 ### 9. 实时识别
 
@@ -273,7 +290,7 @@ cd /path/to/YOLO_Annotation_Pipeline
 
 ```bash
 cd /path/to/YOLO_Annotation_Pipeline
-~/miniforge3/envs/yolo11/bin/python \
+"${ATEC_YOLO_PY:-$HOME/miniforge3/envs/yolo11/bin/python}" \
   tools/live_yolo11_seg.py \
   --model runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt \
   --source 0 \

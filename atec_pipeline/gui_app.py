@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 import signal
 import sys
@@ -27,7 +26,6 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QShortcut,
@@ -37,21 +35,19 @@ from PyQt5.QtWidgets import (
 )
 import yaml
 
-from .auto_processing import (
-    AutoBatchRecord,
-    AutoScenePlan,
-    build_manifest_init_args,
-    plan_auto_scenes,
-    preflight_scene,
-    scene_is_locked,
-    write_batch_report,
+from .workflow_commands import (
+    build_pipeline_command,
+    build_split_command,
+    plan_continue_processing,
+    task_display_name,
 )
+from .runtime import interpreter_path, resolve_sam2_python
+from .path_compat import infer_project_root, resolve_compatible_path
 from .gui_state import (
     CaptureSession,
     ObjectClass,
     discard_failed_empty_capture,
     find_best_weights,
-    find_scene_export_report,
     has_paired_rgbd_frames,
     inspect_scene_integrity,
     load_export_summary,
@@ -69,6 +65,7 @@ from .gui_state import (
     summarize_scene_states,
     write_session_metadata,
 )
+from tools.split_dataset_by_scene import build_auto_plan
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT / "projects" / "atec_real"
@@ -88,16 +85,6 @@ class AtecMainWindow(QMainWindow):
         self.task_kind = ""
         self.pending_after_task: str | None = None
         self.validation_passed = False
-        self._auto_prepare_queue: list[AutoScenePlan] = []
-        self._auto_prepare_failures: list[str] = []
-        self._auto_batch_records: list[AutoBatchRecord] = []
-        self._auto_batch_active = False
-        self._auto_cancel_requested = False
-        self._auto_total = 0
-        self._auto_current_plan: AutoScenePlan | None = None
-        self._auto_current_stage = ""
-        self._auto_started_at: datetime | None = None
-        self._auto_error_lines: list[str] = []
         self._review_action_file: Path | None = None
 
         self.process = QProcess(self)
@@ -107,16 +94,6 @@ class AtecMainWindow(QMainWindow):
         self.process.started.connect(self._process_started)
         self.process.finished.connect(self._process_finished)
         self.process.errorOccurred.connect(self._process_error)
-
-        # Batch processing has its own worker process so the operator can keep
-        # viewing and editing every scene except the one currently being written.
-        self.auto_process = QProcess(self)
-        self.auto_process.setWorkingDirectory(str(ROOT))
-        self.auto_process.readyReadStandardOutput.connect(self._read_auto_stdout)
-        self.auto_process.readyReadStandardError.connect(self._read_auto_stderr)
-        self.auto_process.started.connect(self._auto_process_started)
-        self.auto_process.finished.connect(self._auto_process_finished)
-        self.auto_process.errorOccurred.connect(self._auto_process_error)
 
         self.live_process = QProcess(self)
         self.live_process.setWorkingDirectory(str(ROOT))
@@ -170,18 +147,19 @@ class AtecMainWindow(QMainWindow):
 
     def command_for_segment(self) -> tuple[str, list[str]]:
         manifest = self._require_manifest()
-        return str(ROOT / "scripts" / "atec-pipeline"), [
+        return build_pipeline_command(
+            ROOT,
             "segment",
-            str(manifest),
+            manifest,
             "--output",
             str(self._segments_report()),
-        ]
+        )
 
     def command_for_mask(self, image: Path, output: Path) -> tuple[str, list[str]]:
         return str(ROOT / "scripts" / "atec-pipeline"), ["mask", str(image), str(output)]
 
     def command_for_run(self) -> tuple[str, list[str]]:
-        return str(ROOT / "scripts" / "atec-pipeline"), ["run", str(self._require_manifest())]
+        return build_pipeline_command(ROOT, "run", self._require_manifest())
 
     def command_for_validate(self) -> tuple[str, list[str]]:
         return str(ROOT / "scripts" / "atec-pipeline"), ["validate", str(self._dataset_path())]
@@ -205,7 +183,7 @@ class AtecMainWindow(QMainWindow):
     def command_for_review(self, context: dict, segment_ids: tuple[str, ...] = ()) -> tuple[str, list[str]]:
         action_file = self._require_session().scene_dir / "project_reports" / "manual_mask_review" / "player_action.json"
         self._review_action_file = action_file
-        python = str(Path(context.get("python") or os.environ.get("ATEC_YOLO_PYTHON", "~/miniforge3/envs/yolo11/bin/python")).expanduser())
+        python = str(context.get("python") or interpreter_path("yolo11"))
         args = [
             str(ROOT / "tools" / "review_mask_sequence.py"),
             "--scene", str(context["scene"]),
@@ -382,30 +360,6 @@ class AtecMainWindow(QMainWindow):
         row.addWidget(self.continue_button)
         row.addWidget(self.mask_help_button)
         layout.addLayout(row)
-
-        auto_commands = QHBoxLayout()
-        self.auto_prepare_button = QPushButton("一键自动处理所有场景")
-        self.stop_auto_button = QPushButton("停止自动处理")
-        self.stop_auto_button.setEnabled(False)
-        self.auto_prepare_button.clicked.connect(self.start_auto_prepare)
-        self.stop_auto_button.clicked.connect(self.stop_auto_processing)
-        auto_commands.addWidget(self.auto_prepare_button)
-        auto_commands.addWidget(self.stop_auto_button)
-        layout.addLayout(auto_commands)
-
-        self.auto_overall_label = QLabel("自动处理：尚未开始")
-        self.auto_scene_label = QLabel("当前场景：无")
-        self.auto_stage_label = QLabel("当前阶段：尚未开始")
-        self.auto_failure_label = QLabel("失败原因：无")
-        self.auto_failure_label.setWordWrap(True)
-        self.auto_progress = QProgressBar()
-        self.auto_progress.setRange(0, 1)
-        self.auto_progress.setValue(0)
-        for widget in (
-            self.auto_overall_label, self.auto_scene_label, self.auto_stage_label,
-            self.auto_progress, self.auto_failure_label,
-        ):
-            layout.addWidget(widget)
         return group
 
     def _build_scene_group(self) -> QGroupBox:
@@ -457,12 +411,15 @@ class AtecMainWindow(QMainWindow):
         layout.addWidget(self.workflow_status)
 
         commands = QHBoxLayout()
+        self.prepare_button = QPushButton("准备训练数据")
         self.segment_button = QPushButton("仅运行自动分段")
         self.run_button = QPushButton("仅运行 SAM2/YOLO 导出")
         self.validate_button = QPushButton("验证数据集")
+        self.prepare_button.clicked.connect(self.prepare_training_data)
         self.segment_button.clicked.connect(self.run_segment)
         self.run_button.clicked.connect(self.run_pipeline)
         self.validate_button.clicked.connect(self.run_validate)
+        commands.addWidget(self.prepare_button)
         commands.addWidget(self.segment_button)
         commands.addWidget(self.run_button)
         commands.addWidget(self.validate_button)
@@ -515,9 +472,8 @@ class AtecMainWindow(QMainWindow):
         self.live_model_label = QLabel("尚未发现真实训练 best.pt")
         self.live_model_label.setWordWrap(True)
         self.live_source_kind = QComboBox()
-        self.live_source_kind.addItem("笔记本 HD Webcam（/dev/video0）", "opencv")
+        self.live_source_kind.addItem("外接 HD Webcam（/dev/video0）", "opencv")
         self.live_source_kind.addItem("Orbbec SDK RGB（与采集相机一致）", "orbbec")
-        self.live_source_kind.setCurrentIndex(self.live_source_kind.findData("orbbec"))
         self.live_source_kind.currentIndexChanged.connect(self._refresh_live_source_controls)
         self.live_source = QLineEdit("0")
         self.live_source.setPlaceholderText("普通摄像头编号或视频文件路径")
@@ -612,7 +568,7 @@ class AtecMainWindow(QMainWindow):
         )
         if weights is None or not weights.is_file():
             raise FileNotFoundError("尚未发现真实训练生成的 best.pt；不会使用官方基础权重冒充。")
-        python = Path(os.environ.get("ATEC_YOLO_PYTHON", "~/miniforge3/envs/yolo11/bin/python")).expanduser()
+        python = interpreter_path("yolo11")
         if not python.is_file():
             raise FileNotFoundError(f"YOLO11 Python环境不存在: {python}")
 
@@ -623,7 +579,7 @@ class AtecMainWindow(QMainWindow):
             "--device", self.device.text().strip() or "0",
         ]
         if self.live_source_kind.currentData() == "orbbec":
-            orbbec_python = Path(os.environ.get("ATEC_ORBBEC_PYTHON", "~/miniforge3/envs/orbbec/bin/python")).expanduser()
+            orbbec_python = interpreter_path("orbbec")
             if not orbbec_python.is_file():
                 raise FileNotFoundError(f"Orbbec Python环境不存在: {orbbec_python}")
             return str(python), [
@@ -741,8 +697,6 @@ class AtecMainWindow(QMainWindow):
         return self.session
 
     def check_or_repair_integrity(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         """Inspect the selected formal scene and quarantine proven-safe orphans."""
         try:
             session = self._require_session()
@@ -825,15 +779,16 @@ class AtecMainWindow(QMainWindow):
 
     def _scene_export_report(self) -> Path:
         session = self._require_session()
-        resolved = find_scene_export_report(self.project_root, session.scene_name, session.split)
-        if resolved is not None:
-            return resolved
         return self._dataset_path().parent / "project_reports" / f"{session.scene_name}_{session.split}_report.json"
 
     @staticmethod
     def _manifest_path(value: str | Path, base: Path) -> Path:
-        path = Path(value).expanduser()
-        return path.resolve() if path.is_absolute() else (base / path).resolve()
+        return resolve_compatible_path(
+            value,
+            base=base,
+            repository_root=ROOT,
+            project_root=infer_project_root(base, repository_root=ROOT),
+        )
 
     def _review_contexts(self) -> list[dict]:
         if not self.session:
@@ -852,7 +807,9 @@ class AtecMainWindow(QMainWindow):
             if item.get("instance_id")
         }
         scene = self._manifest_path(project.get("scene", self.session.scene_dir), manifest_path.parent)
-        python = str(Path(project.get("sam2_python") or "~/miniforge3/envs/yolo11/bin/python").expanduser())
+        python = str(resolve_sam2_python(
+            project.get("sam2_python"), manifest_dir=manifest_path.parent
+        ))
         split = str(export.get("split") or project.get("split") or self.session.split)
         contexts: list[dict] = []
         for item in export.get("instances") or []:
@@ -1022,33 +979,9 @@ class AtecMainWindow(QMainWindow):
             return list(segment.get("missing_key_masks") or [])
         missing: list[str] = []
         for instance, raw_path in required.items():
-            path = self._resolve_snapshot_reference(str(raw_path), report)
-            if not path.exists():
+            if not self._manifest_path(raw_path, report.parent).exists():
                 missing.append(str(instance))
         return missing
-
-    @staticmethod
-    def _resolve_snapshot_reference(raw_path: str, report: Path) -> Path:
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            return (report.parent / path).resolve()
-        if path.exists():
-            return path.resolve()
-        # Data snapshots created on another machine may contain stale
-        # absolute paths.  Re-anchor them at this checkout's atec_real root.
-        parts = path.parts
-        project_root = next(
-            (parent.parent for parent in (report.parent, *report.parents)
-             if parent.name in {"data", "datasets"}),
-            None,
-        )
-        if project_root is not None:
-            for marker in ("data", "datasets"):
-                if marker in parts:
-                    candidate = (project_root / Path(*parts[parts.index(marker):])).resolve()
-                    if candidate.exists():
-                        return candidate
-        return path.resolve()
 
     def _masks_complete(self) -> bool:
         try:
@@ -1083,9 +1016,12 @@ class AtecMainWindow(QMainWindow):
             return False
         try:
             data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-            root = Path(data.get("path", yaml_path.parent)).expanduser()
-            if not root.is_absolute():
-                root = (yaml_path.parent / root).resolve()
+            root = resolve_compatible_path(
+                data.get("path", yaml_path.parent),
+                base=yaml_path.parent,
+                repository_root=ROOT,
+                project_root=self.project_root,
+            )
 
             def split_dir(name: str) -> Path | None:
                 raw = data.get(name)
@@ -1106,58 +1042,33 @@ class AtecMainWindow(QMainWindow):
         except (OSError, ValueError, TypeError, yaml.YAMLError):
             return False
 
-    def _selected_scene_name(self) -> str | None:
-        return self.session.scene_name if self.session else None
-
-    def _is_scene_locked(self, scene_name: str | None = None) -> bool:
-        selected = scene_name if scene_name is not None else self._selected_scene_name()
-        current = self._auto_current_plan.scene_name if self._auto_current_plan else None
-        return scene_is_locked(self._auto_batch_active, current, selected)
-
-    def _ensure_selected_scene_unlocked(self) -> bool:
-        if not self._is_scene_locked():
-            return True
-        scene_name = self._selected_scene_name() or "当前场景"
-        QMessageBox.warning(
-            self, "场景正在自动处理",
-            f"{scene_name} 正在由 SAM2/导出流水线写入，暂时只读。可先编辑其他场景。",
-        )
-        return False
-
     def _refresh_state(self, *, refresh_scenes: bool = True) -> None:
         main_active = self.process.state() != QProcess.NotRunning
-        auto_active = self._auto_batch_active
         live_active = self.live_process.state() != QProcess.NotRunning
-        foreground_active = main_active or live_active
-        resource_active = foreground_active or auto_active
-        selected_locked = self._is_scene_locked()
-        scene_editable = not foreground_active and not selected_locked
+        active = main_active or live_active
         has_staging = bool(self.session and self.session.staging_dir.exists())
         has_scene = bool(self.session and self.session.scene_dir.exists())
         has_manifest = bool(self.session and manifest_for_session(self.session).exists())
         report_exists = bool(self.session and self._segments_report().exists())
         masks = self._masks_complete() if self.session else False
 
-        # Capture/training/live inference are held while the GPU batch worker is
-        # active. Annotation and Review remain available for other scenes.
-        self.start_button.setEnabled(not resource_active and self.session is not None)
+        self.start_button.setEnabled(not active and self.session is not None)
         self.stop_button.setEnabled(main_active and self.task_kind == "capture")
         self.stop_capture_shortcut.setEnabled(main_active and self.task_kind == "capture")
-        self.save_button.setEnabled(not resource_active and has_staging and not has_scene and self._has_rgbd_frames())
-        self.discard_button.setEnabled(not resource_active and has_staging and not has_scene)
-        self.mark_button.setEnabled(scene_editable and has_scene)
-        self.continue_button.setEnabled(scene_editable and has_scene and has_manifest)
-        self.segment_button.setEnabled(scene_editable and has_scene and has_manifest)
-        self.run_button.setEnabled(scene_editable and has_manifest and masks)
-        self.validate_button.setEnabled(not resource_active and has_manifest and self._dataset_path().exists())
-        self.auto_prepare_button.setEnabled(not resource_active)
-        self.stop_auto_button.setEnabled(auto_active)
-        self.integrity_button.setEnabled(scene_editable and has_scene)
+        self.save_button.setEnabled(not active and has_staging and not has_scene and self._has_rgbd_frames())
+        self.discard_button.setEnabled(not active and has_staging and not has_scene)
+        self.mark_button.setEnabled(not active and has_scene)
+        self.continue_button.setEnabled(not active and has_scene and has_manifest)
+        self.segment_button.setEnabled(not active and has_scene and has_manifest)
+        self.run_button.setEnabled(not active and has_manifest and masks)
+        self.validate_button.setEnabled(not active and has_manifest and self._dataset_path().exists())
+        self.prepare_button.setEnabled(not active)
+        self.integrity_button.setEnabled(not active and has_scene)
         try:
             can_review = bool(self._review_contexts())
         except (OSError, ValueError, TypeError, json.JSONDecodeError, yaml.YAMLError):
             can_review = False
-        self.review_button.setEnabled(scene_editable and can_review)
+        self.review_button.setEnabled(not active and can_review)
         active_scene = self.session.scene_dir if self.session and self.session.scene_dir.is_dir() else None
         if active_scene is not None:
             completion = load_scene_human_review_completion(self.project_root, active_scene)
@@ -1166,42 +1077,37 @@ class AtecMainWindow(QMainWindow):
             completion = None
             marker_exists = False
         self.mark_review_complete_button.setEnabled(
-            scene_editable and can_review and completion is not None and not completion.valid
+            not active and can_review and completion is not None and not completion.valid
         )
-        self.clear_review_complete_button.setEnabled(scene_editable and marker_exists)
-        self.train_button.setEnabled(
-            not resource_active and self.validation_passed and self.has_independent_val()
-        )
+        self.clear_review_complete_button.setEnabled(not active and marker_exists)
+        self.train_button.setEnabled(not active and self.validation_passed and self.has_independent_val())
         self.stop_train_button.setEnabled(main_active and self.task_kind == "train")
-        self.live_start_button.setEnabled(not resource_active and bool(self._live_model_path))
+        self.live_start_button.setEnabled(not active and bool(self._live_model_path))
         self.live_stop_button.setEnabled(live_active)
         self._refresh_mask_progress()
         self._refresh_propagation_status()
-        self._update_auto_progress()
 
-        if selected_locked:
-            guidance = (
-                f"{self._selected_scene_name()} 正在自动处理，当前场景暂时只读；"
-                "可以从场景列表选择并编辑其他未处理场景。"
-            )
-        elif main_active and self.task_kind == "capture":
-            guidance = "正在采集：观察独立 RGB-D 预览，完成后点击‘停止采集’。"
+        if active and self.task_kind == "capture":
+            guidance = "正在采集：观察独立 RGB-D 预览，完成后点击“停止采集”。"
+        elif main_active:
+            display = task_display_name(self.task_kind)
+            guidance = f"{display}正在运行；详细命令和输出已展开到运行日志。"
         elif has_staging and not has_scene:
             guidance = "采集已暂存：确认配对帧后保存，或丢弃本次数据。"
         elif has_scene and not has_manifest:
-            guidance = "场次已保存但 Manifest 尚未创建；点击‘开始标记’会先重试初始化。"
+            guidance = "场次已保存但 Manifest 尚未创建；点击“开始标记”会先重试初始化。"
         elif has_scene and has_manifest and not report_exists:
-            guidance = "可以点击‘开始标记’；App 会先自动分段，再打开 Mask 标记器。"
+            guidance = "可以点击“开始标记”；App 会先自动分段，再打开 Mask 标记器。"
         elif report_exists and not masks:
             progress = load_mask_progress(self._segments_report())
             guidance = (
                 f"关键帧 Mask 已保存 {progress.completed_required}/{progress.total_required}；"
-                "在编辑器中按 Enter 应用、S 保存、Q 退出，然后点击‘开始标记 / 标下一个’。"
+                "在编辑器中按 Enter 应用、S 保存、Q 退出，然后点击“开始标记 / 标下一个”。"
             )
         elif masks:
-            guidance = "关键帧 Mask 已完成；点击‘继续自动处理’运行 SAM2 传播和 YOLO 导出。"
+            guidance = "关键帧 Mask 已完成；点击“继续自动处理”运行 SAM2 传播和 YOLO 导出。"
         else:
-            guidance = "选择类别后点击‘开始采集’。"
+            guidance = "选择类别后点击“开始采集”。"
         self.guidance_label.setText(guidance)
 
         self.workflow_status.clear()
@@ -1220,12 +1126,15 @@ class AtecMainWindow(QMainWindow):
         self.train_status.setText(
             f"本次有效标签类别：{', '.join(useful_classes) if useful_classes else '暂无'}\n"
             f"尚无有效标签：{', '.join(missing_classes) if missing_classes else '无'}\n"
-            + ("训练数据已验证，可以开始阶段性训练。" if self.validation_passed else "先完成一键自动处理，再点击‘验证数据集’解锁训练。")
+            + ("训练数据已验证，可以开始阶段性训练。" if self.validation_passed else "点击“准备训练数据”并通过验证后解锁训练。")
         )
+        self.dataset_label.setText(str(self._dataset_path()))
+        self._refresh_capture_metrics()
         self.refresh_training_result()
         if refresh_scenes:
             self._refresh_scene_list()
 
+    # ---------- process handling ----------
     def _append_log(self, text: str) -> None:
         cleaned = text.rstrip("\n")
         if cleaned:
@@ -1237,48 +1146,59 @@ class AtecMainWindow(QMainWindow):
     def _read_stderr(self) -> None:
         self._append_log(bytes(self.process.readAllStandardError()).decode(errors="replace"))
 
-    def _read_auto_stdout(self) -> None:
-        text = bytes(self.auto_process.readAllStandardOutput()).decode(errors="replace")
-        if text:
-            self._append_log(text)
-
-    def _read_auto_stderr(self) -> None:
-        text = bytes(self.auto_process.readAllStandardError()).decode(errors="replace")
-        if text:
-            self._append_log(text)
-            self._auto_error_lines.extend(line.strip() for line in text.splitlines() if line.strip())
-            self._auto_error_lines = self._auto_error_lines[-20:]
-            self.auto_failure_label.setText(f"失败原因：{self._auto_error_lines[-1]}")
-
     def _start_task(self, kind: str, program: str, args: list[str]) -> None:
         if self.process.state() != QProcess.NotRunning:
             QMessageBox.warning(self, "任务进行中", "请先停止或等待当前任务完成。")
             return
         self.task_kind = kind
-        self.process_status.setText(kind)
+        self._task_program = program
+        self._task_args = list(args)
+        display = task_display_name(kind)
+        self.process_status.setText(f"正在启动：{display}")
+        self._append_log(f"[准备] {display}")
         self._append_log("$ " + " ".join([program, *args]))
+        if kind != "capture":
+            self._show_log()
         self.process.start(program, args)
         self._refresh_state()
 
     def _process_started(self) -> None:
-        self._append_log(f"[开始] {self.task_kind}")
+        display = task_display_name(self.task_kind)
+        self.process_status.setText(f"运行中：{display}")
+        self._append_log(f"[开始] {display}")
         if self.task_kind == "capture":
             self.camera_status.setText("采集程序运行中，等待 RGB-D 预览")
         self._refresh_state()
 
     def _process_error(self, error: QProcess.ProcessError) -> None:
-        self._append_log(f"[进程错误] {error}")
+        display = task_display_name(self.task_kind)
+        detail = self.process.errorString() or str(error)
+        program = getattr(self, "_task_program", "未知程序")
+        failed_to_start = error == QProcess.FailedToStart
+        self.process_status.setText(
+            f"启动失败：{display}" if failed_to_start else f"进程异常：{display}"
+        )
+        self._append_log(f"[进程错误] {display}: {detail}")
         if self.task_kind == "capture":
             self.camera_status.setText("相机未就绪（查看日志）")
         self._show_log()
+        if failed_to_start:
+            QMessageBox.critical(
+                self,
+                "任务启动失败",
+                f"无法启动：{program}\n{detail}\n\n请查看已展开的运行日志。",
+            )
         self._refresh_state()
 
     def _process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         del exit_status
         kind = self.task_kind
-        self._append_log(f"[结束] {kind}: exit={exit_code}")
-        self.process_status.setText("空闲")
+        display = task_display_name(kind)
+        self._append_log(f"[结束] {display}: exit={exit_code}")
         succeeded = exit_code == 0 or (kind == "capture" and exit_code == 130) or (kind == "review" and exit_code == 20)
+        self.process_status.setText(
+            f"已完成：{display}" if succeeded else f"执行失败：{display} (exit={exit_code})"
+        )
 
         if kind == "capture":
             if succeeded:
@@ -1300,10 +1220,25 @@ class AtecMainWindow(QMainWindow):
         self.pending_after_task = None
         if not succeeded:
             self._show_log()
-        if kind in {"validate", "auto_validate"}:
+        if kind in {"validate", "prepare_validate"}:
             self.validation_passed = succeeded
         self._refresh_state()
-        if kind == "auto_validate":
+        if kind == "prepare_split":
+            if succeeded:
+                moved = getattr(self, "_prepare_val_frames", 0)
+                self._append_log(f"[训练准备] 已将 {moved} 个 accepted 样本按完整场次划入 val。")
+                QTimer.singleShot(
+                    0,
+                    lambda: self._start_task("prepare_validate", *self.command_for_validate()),
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "验证集划分失败",
+                    "切分命令执行失败；数据工具会自行回滚。请查看已展开的日志。",
+                )
+            return
+        if kind == "prepare_validate":
             if succeeded:
                 QMessageBox.information(self, "训练数据已就绪", "train/val 数据与安全检查已通过，可以开始阶段性训练。")
             else:
@@ -1474,8 +1409,6 @@ class AtecMainWindow(QMainWindow):
                 QMessageBox.critical(self, "丢弃失败", str(exc))
 
     def start_annotation(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
             session = self._require_session()
             if not session.scene_dir.exists():
@@ -1493,23 +1426,27 @@ class AtecMainWindow(QMainWindow):
             QMessageBox.warning(self, "无法开始标记", str(exc))
 
     def continue_processing(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
-            self._require_manifest()
-            if not self._segments_report().exists():
+            plan = plan_continue_processing(
+                self._require_manifest(),
+                self._segments_report(),
+                masks_complete=self._masks_complete(),
+            )
+            self.guidance_label.setText(plan.feedback)
+            self._append_log(f"[继续处理] {plan.feedback}")
+            if plan.action == "segment":
                 self.pending_after_task = "mark"
                 self.run_segment()
-            elif not self._masks_complete():
+            elif plan.action == "mask":
                 self.mark_next_missing()
             else:
                 self.run_pipeline()
         except Exception as exc:
+            self._append_log(f"[继续处理失败] {exc}")
+            self._show_log()
             QMessageBox.warning(self, "无法继续处理", str(exc))
 
     def start_review(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
             contexts = self._review_contexts()
             if not contexts:
@@ -1541,8 +1478,6 @@ class AtecMainWindow(QMainWindow):
             QMessageBox.warning(self, "无法检查标注效果", str(exc))
 
     def mark_current_scene_review_complete(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         """Explicitly mark the entire selected scene as human reviewed."""
         try:
             session = self._require_session()
@@ -1572,8 +1507,6 @@ class AtecMainWindow(QMainWindow):
             QMessageBox.warning(self, "无法标记 Review 完成", str(exc))
 
     def clear_current_scene_review_complete(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         """Clear only the selected scene's completion marker."""
         try:
             session = self._require_session()
@@ -1598,8 +1531,6 @@ class AtecMainWindow(QMainWindow):
 
     # ---------- advanced command actions ----------
     def run_segment(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
             command = self.command_for_segment()
         except Exception as exc:
@@ -1613,11 +1544,7 @@ class AtecMainWindow(QMainWindow):
         if not report.exists():
             return None
         data = json.loads(report.read_text(encoding="utf-8"))
-        scene = self._resolve_snapshot_reference(str(data.get("scene", self.session.scene_dir)), report)
-        if not scene.exists():
-            # The report may contain an absolute path from the machine that
-            # produced the shared snapshot; the report location is canonical.
-            scene = report.parent.parent
+        scene = self._manifest_path(data.get("scene", self.session.scene_dir), report.parent)
         for segment in data.get("segments", []):
             missing = self._missing_masks_for_segment(segment, report)
             if not missing:
@@ -1626,15 +1553,13 @@ class AtecMainWindow(QMainWindow):
             output_value = (segment.get("required_key_mask_paths") or {}).get(instance)
             if not output_value:
                 continue
-            output = self._resolve_snapshot_reference(str(output_value), report)
+            output = self._manifest_path(output_value, report.parent)
             frame_id = str(segment["start_id"])
             image_name = frame_id if frame_id.lower().endswith(".png") else f"{frame_id}.png"
             return scene / "rgb" / image_name, output
         return None
 
     def mark_next_missing(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
             next_item = self._next_missing_mask()
         except Exception as exc:
@@ -1649,8 +1574,6 @@ class AtecMainWindow(QMainWindow):
         self._start_task("mask", *self.command_for_mask(image, output))
 
     def run_pipeline(self) -> None:
-        if not self._ensure_selected_scene_unlocked():
-            return
         try:
             command = self.command_for_run()
         except Exception as exc:
@@ -1659,311 +1582,80 @@ class AtecMainWindow(QMainWindow):
         self.validation_passed = False
         self._start_task("run", *command)
 
-    def _record_auto_terminal(
-        self, plan: AutoScenePlan, status: str, reason: str, *, exit_code: int | None = None
-    ) -> None:
-        if any(record.scene_name == plan.scene_name for record in self._auto_batch_records):
-            return
-        self._auto_batch_records.append(AutoBatchRecord(
-            scene_name=plan.scene_name,
-            stage=plan.stage,
-            status=status,
-            reason=reason,
-            exit_code=exit_code,
-            quarantine_path=str(plan.quarantine_path) if plan.quarantine_path else None,
-            manifest_path=str(plan.manifest_path) if plan.manifest_path else None,
-            manifest_backup_path=str(plan.manifest_backup_path) if plan.manifest_backup_path else None,
-        ))
-        if status == "failed":
-            self._auto_prepare_failures.append(plan.scene_name)
-            self.auto_failure_label.setText(f"失败原因：{plan.scene_name}：{reason}")
-        self._update_auto_progress()
+    def prepare_training_data(self) -> None:
+        """Split and validate scenes that already have accepted exports.
 
-    def _update_auto_progress(self) -> None:
-        total = max(0, self._auto_total)
-        completed = len({record.scene_name for record in self._auto_batch_records})
-        maximum = max(1, total)
-        self.auto_progress.setRange(0, maximum)
-        self.auto_progress.setValue(min(completed, maximum))
-        counts = {name: 0 for name in ("success", "failed", "manual", "skipped", "cancelled")}
-        for record in self._auto_batch_records:
-            status = record.status
-            if status == "success":
-                counts["success"] += 1
-            elif status == "failed":
-                counts["failed"] += 1
-            elif status == "manual":
-                counts["manual"] += 1
-            elif status in {"skip", "skipped", "completed"} and record.stage == "skip":
-                counts["skipped"] += 1
-            elif status == "cancelled":
-                counts["cancelled"] += 1
-        if total:
-            self.auto_overall_label.setText(
-                f"自动处理：完成 {completed}/{total} | 成功 {counts['success']} | "
-                f"跳过 {counts['skipped']} | 失败 {counts['failed']} | "
-                f"需人工 {counts['manual']} | 已取消 {counts['cancelled']}"
-            )
-        elif self._auto_batch_active:
-            self.auto_overall_label.setText("自动处理：正在扫描场景")
-        else:
-            self.auto_overall_label.setText("自动处理：尚未开始")
-        if self._auto_current_plan is not None:
-            self.auto_scene_label.setText(f"当前场景：{self._auto_current_plan.scene_name}")
-        elif self._auto_batch_active:
-            self.auto_scene_label.setText("当前场景：准备中")
-        else:
-            self.auto_scene_label.setText("当前场景：无")
-        stage_names = {
-            "init": "修复 Manifest", "segment": "自动分段", "run": "SAM2传播 / 质量检查 / YOLO导出",
-            "auto_init": "修复 Manifest", "auto_segment": "自动分段",
-            "auto_run": "SAM2传播 / 质量检查 / YOLO导出",
-            "completed": "已完成", "cancelled": "已停止", "": "尚未开始",
-        }
-        self.auto_stage_label.setText(
-            f"当前阶段：{stage_names.get(self._auto_current_stage, self._auto_current_stage or '尚未开始')}"
-        )
-
-    def start_auto_prepare(self) -> None:
-        """Scan and safely process every eligible scene without reshuffling splits."""
-        if self._auto_batch_active or self.process.state() != QProcess.NotRunning or self.live_process.state() != QProcess.NotRunning:
-            QMessageBox.warning(self, "任务进行中", "请先停止当前采集、标注、训练、识别或自动处理任务。")
+        Unfinished scenes are handled one at a time through
+        continue_processing so failures remain local and reproducible.
+        """
+        if self.process.state() != QProcess.NotRunning:
+            QMessageBox.warning(self, "任务进行中", "请等待当前任务完成后再准备训练数据。")
             return
         self.validation_passed = False
-        self._auto_prepare_failures = []
-        self._auto_batch_records = []
-        self._auto_prepare_queue = []
-        self._auto_current_plan = None
-        self._auto_current_stage = ""
-        self._auto_cancel_requested = False
-        self._auto_started_at = datetime.now(timezone.utc)
-        self._auto_error_lines = []
-        self.auto_failure_label.setText("失败原因：无")
         try:
             states = self._all_scene_states()
-            plans = plan_auto_scenes(self.project_root, states)
         except Exception as exc:
-            self._auto_started_at = None
-            self._auto_total = 0
             QMessageBox.warning(self, "扫描场次失败", str(exc))
-            self._append_log(f"[自动处理/扫描失败] {exc}")
             return
-        self._auto_total = len(plans)
-        for plan in plans:
-            if plan.action == "skip":
-                self._record_auto_terminal(plan, "skipped", plan.reason)
-            elif plan.action == "manual":
-                self._record_auto_terminal(plan, "manual", plan.reason)
-            else:
-                self._auto_prepare_queue.append(plan)
-        self._auto_batch_active = True
+        manual = [state for state in states if state.group == "needs_manual"]
+        pending = [state for state in states if state.code in {"pending_export", "export_failed"}]
+        usable = [state for state in states if state.training_eligible]
         self._append_log(
-            f"[自动处理] 扫描 {len(plans)} 个场景：可自动推进 {len(self._auto_prepare_queue)}，"
-            f"立即跳过/需人工 {len(self._auto_batch_records)}。"
+            f"[训练准备] 扫描 {len(states)} 个场次：可用 {len(usable)}，"
+            f"待人工 {len(manual)}，待单场处理 {len(pending)}。"
         )
-        self._refresh_state()
-        if self._auto_prepare_queue:
-            self._run_next_auto_scene()
-        else:
-            self._finish_auto_batch(cancelled=False)
-
-    def _launch_auto_plan(self, plan: AutoScenePlan) -> None:
-        self._auto_current_plan = plan
-        self._auto_error_lines = []
-        if plan.action == "init":
-            args = build_manifest_init_args(self.project_root, plan)
-            self._start_auto_task("auto_init", str(ROOT / "scripts" / "atec-pipeline"), args)
-        elif plan.action == "segment":
-            if plan.manifest_path is None:
-                self._record_auto_terminal(plan, "failed", "自动分段前 Manifest 路径为空")
-                self._auto_current_plan = None
-                self._run_next_auto_scene()
-                return
-            self._start_auto_task(
-                "auto_segment", str(ROOT / "scripts" / "atec-pipeline"),
-                ["segment", str(plan.manifest_path)],
+        if not usable:
+            QMessageBox.warning(
+                self,
+                "没有可用训练场次",
+                "尚无包含 accepted 导出的场次。请逐场选择并点击“继续自动处理”。",
             )
-        elif plan.action == "run":
-            if plan.manifest_path is None:
-                self._record_auto_terminal(plan, "failed", "自动传播前 Manifest 路径为空")
-                self._auto_current_plan = None
-                self._run_next_auto_scene()
-                return
-            self._start_auto_task(
-                "auto_run", str(ROOT / "scripts" / "atec-pipeline"),
-                ["run", str(plan.manifest_path)],
+            return
+        if manual or pending:
+            self._append_log(
+                "[训练准备] 未完成场次不会被批量推进；请在场次列表中逐一处理。"
             )
-        else:
-            self._record_auto_terminal(plan, plan.action, plan.reason)
-            self._auto_current_plan = None
-            self._run_next_auto_scene()
+        self._preview_training_split()
 
-    def _run_next_auto_scene(self) -> None:
-        if not self._auto_batch_active:
-            return
-        if self._auto_cancel_requested:
-            self._finish_auto_batch(cancelled=True)
-            return
-        if not self._auto_prepare_queue:
-            self._finish_auto_batch(cancelled=False)
-            return
-        plan = self._auto_prepare_queue.pop(0)
-        self._append_log(f"[自动处理] {plan.scene_name}：{plan.reason}")
-        self._launch_auto_plan(plan)
-        self._refresh_state()
-
-    def _start_auto_task(self, kind: str, program: str, args: list[str]) -> None:
-        if self.auto_process.state() != QProcess.NotRunning:
-            raise RuntimeError("自动处理子进程仍在运行")
-        self._auto_current_stage = kind
-        self._append_log("$ " + " ".join([program, *args]))
-        # ``atec-pipeline run`` launches shell/Python children.  A separate
-        # session lets Stop terminate the complete worker tree instead of only
-        # the outer CLI process and leaving SAM2 on the GPU.
-        self.auto_process.start("setsid", [program, *args])
-        self._update_auto_progress()
-
-    def _signal_auto_process_group(self, sig: int) -> bool:
-        pid = int(self.auto_process.processId())
-        if not pid:
-            return False
+    def _preview_training_split(self) -> None:
         try:
-            os.killpg(pid, sig)
-        except ProcessLookupError:
-            return True
-        except (OSError, PermissionError) as exc:
-            self._append_log(f"[自动处理/停止警告] 无法向进程组 {pid} 发送信号 {sig}：{exc}")
-            return False
-        return True
-
-    def _auto_process_started(self) -> None:
-        self._append_log(f"[自动处理/开始] {self._auto_current_stage}")
-        self._refresh_state(refresh_scenes=False)
-
-    def _auto_process_error(self, error: QProcess.ProcessError) -> None:
-        self._append_log(f"[自动处理/进程错误] {error}")
-        self.auto_failure_label.setText(f"失败原因：进程错误 {error}")
-        if error == QProcess.FailedToStart and self._auto_batch_active and self._auto_current_plan is not None:
-            # FailedToStart can be followed by a stale ``finished`` signal.  Do
-            # not synchronously launch the next scene from inside errorOccurred,
-            # otherwise that stale signal may be attributed to the new scene.
-            plan = self._auto_current_plan
-            self._record_auto_terminal(plan, "failed", "自动处理子进程无法启动", exit_code=-1)
-            self._auto_current_plan = None
-            QTimer.singleShot(0, self._run_next_auto_scene)
-
-    def _replan_current_scene(self) -> AutoScenePlan:
-        if self._auto_current_plan is None:
-            raise RuntimeError("自动处理没有当前场景")
-        state = scene_workflow_state(self.project_root, self._auto_current_plan.scene_dir)
-        refreshed = preflight_scene(self.project_root, state)
-        previous = self._auto_current_plan
-        refreshed = AutoScenePlan(
-            scene_name=refreshed.scene_name,
-            scene_dir=refreshed.scene_dir,
-            class_name=refreshed.class_name,
-            split=refreshed.split,
-            manifest_path=refreshed.manifest_path,
-            action=refreshed.action,
-            stage=refreshed.stage,
-            reason=refreshed.reason,
-            quarantine_path=refreshed.quarantine_path or previous.quarantine_path,
-            capture_session_id=refreshed.capture_session_id,
-            source_video_id=refreshed.source_video_id,
-            manifest_backup_path=refreshed.manifest_backup_path or previous.manifest_backup_path,
-        )
-        return refreshed
-
-    def _auto_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
-        del exit_status
-        if not self._auto_batch_active or self._auto_current_plan is None:
-            return
-        plan = self._auto_current_plan
-        stage = self._auto_current_stage
-        self._append_log(f"[自动处理/结束] {stage}: exit={exit_code}")
-        if self._auto_cancel_requested:
-            self._record_auto_terminal(plan, "cancelled", "用户停止；有效中间结果已保留", exit_code=exit_code)
-            self._auto_current_plan = None
-            self._finish_auto_batch(cancelled=True)
-            return
-        if exit_code != 0:
-            detail = self._auto_error_lines[-1] if self._auto_error_lines else f"进程退出码 {exit_code}"
-            self._record_auto_terminal(plan, "failed", detail, exit_code=exit_code)
-            self._append_log(f"[自动处理] {plan.scene_name} 失败，跳过并继续下一场景：{detail}")
-            self._auto_current_plan = None
-            self._run_next_auto_scene()
-            return
-        try:
-            refreshed = self._replan_current_scene()
+            plan = build_auto_plan(self._dataset_path(), target_ratio=0.20)
         except Exception as exc:
-            self._record_auto_terminal(plan, "failed", f"完成后复检失败：{exc}", exit_code=exit_code)
-            self._auto_current_plan = None
-            self._run_next_auto_scene()
+            self._refresh_state()
+            QMessageBox.warning(self, "无法准备验证集", str(exc))
+            self._append_log(f"[训练准备失败] {exc}")
             return
-
-        if stage == "auto_init" and refreshed.action == "segment":
-            self._launch_auto_plan(refreshed)
+        if not plan.get("files"):
+            self._append_log("[训练准备] 已存在固定 val，无需重新洗牌；开始验证。")
+            self._start_task("prepare_validate", *self.command_for_validate())
+            return
+        val_scenes = sorted({name for group in plan["groups"] for name in group.scene_names})
+        all_groups = [state for state in self._all_scene_states() if state.training_eligible and state.split == "train"]
+        train_scenes = sorted(state.scene_name for state in all_groups if state.scene_name not in val_scenes)
+        val_frames = len(plan["files"])
+        train_frames = sum(state.accepted for state in all_groups) - val_frames
+        preview = (
+            "准备按完整场次划分验证集（不会拆分同一采集视频）\n\n"
+            "train:\n- " + ("\n- ".join(train_scenes) or "无")
+            + "\n\nval:\n- " + "\n- ".join(val_scenes)
+            + f"\n\n预计：train {max(0, train_frames)} 张，val {val_frames} 张\n\n确认划分？"
+        )
+        answer = QMessageBox.question(
+            self, "准备训练数据", preview,
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            self._append_log("[训练准备] 用户取消验证集划分，未修改文件。")
             self._refresh_state()
             return
-        if stage == "auto_segment" and refreshed.action == "run":
-            self._launch_auto_plan(refreshed)
-            self._refresh_state()
-            return
-        if stage == "auto_run" and refreshed.action == "skip":
-            self._record_auto_terminal(refreshed, "success", refreshed.reason, exit_code=exit_code)
-        elif refreshed.action == "manual":
-            self._record_auto_terminal(refreshed, "manual", refreshed.reason, exit_code=exit_code)
-        elif refreshed.action == "skip":
-            self._record_auto_terminal(refreshed, "success", refreshed.reason, exit_code=exit_code)
-        else:
-            self._record_auto_terminal(
-                refreshed, "failed",
-                f"阶段 {stage} 成功退出，但复检仍停留在 {refreshed.action}：{refreshed.reason}",
-                exit_code=exit_code,
-            )
-        self._auto_current_plan = None
-        self._run_next_auto_scene()
-
-    def stop_auto_processing(self) -> None:
-        if not self._auto_batch_active:
-            return
-        self._auto_cancel_requested = True
-        self._auto_current_stage = "cancelled"
-        self._append_log("[自动处理] 收到停止请求；保留已完成和有效中间结果。")
-        if self.auto_process.state() != QProcess.NotRunning:
-            if not self._signal_auto_process_group(signal.SIGTERM):
-                self.auto_process.terminate()
-            self._update_auto_progress()
-            return
-        if self._auto_current_plan is not None:
-            self._record_auto_terminal(
-                self._auto_current_plan, "cancelled", "用户停止；该场景下次将按文件状态续做"
-            )
-            self._auto_current_plan = None
-        self._finish_auto_batch(cancelled=True)
-
-    def _finish_auto_batch(self, *, cancelled: bool) -> None:
-        if not self._auto_batch_active and self._auto_started_at is None:
-            return
-        if cancelled:
-            for plan in self._auto_prepare_queue:
-                self._record_auto_terminal(plan, "cancelled", "批处理停止；下次重新扫描后续做")
-        self._auto_batch_active = False
-        self._auto_current_stage = "cancelled" if cancelled else "completed"
-        started = self._auto_started_at or datetime.now(timezone.utc)
-        try:
-            report = write_batch_report(
-                self.project_root, self._auto_batch_records, started_at=started,
-                finished_at=datetime.now(timezone.utc), cancelled=cancelled,
-            )
-            self._append_log(f"[自动处理] 报告：{report}")
-        except Exception as exc:
-            self._append_log(f"[自动处理/报告失败] {exc}")
-            self.auto_failure_label.setText(f"失败原因：报告写入失败：{exc}")
-        self._auto_started_at = None
-        self._auto_current_plan = None
-        self._auto_prepare_queue = []
-        self._refresh_state()
+        self._prepare_val_frames = val_frames
+        command = build_split_command(
+            ROOT,
+            self._dataset_path(),
+            val_scenes=tuple(val_scenes),
+            apply=True,
+        )
+        self._start_task("prepare_split", *command)
 
     def run_validate(self) -> None:
         try:
@@ -1981,35 +1673,13 @@ class AtecMainWindow(QMainWindow):
         self._start_task("train", *self.command_for_train())
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        main_active = self.process.state() != QProcess.NotRunning
-        live_active = self.live_process.state() != QProcess.NotRunning
-        auto_active = self._auto_batch_active or self.auto_process.state() != QProcess.NotRunning
-        if main_active or live_active or auto_active:
-            answer = QMessageBox.question(
-                self, "任务运行中",
-                "仍有后台任务、自动处理或实时识别。退出会停止任务并保留已完成结果，确定退出吗？",
-            )
+        if self.process.state() != QProcess.NotRunning or self.live_process.state() != QProcess.NotRunning:
+            answer = QMessageBox.question(self, "任务运行中", "仍有后台任务或实时识别，确定退出吗？")
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
             self.stop_task()
             self.stop_live_recognition()
-            self.stop_auto_processing()
-            if self.auto_process.state() != QProcess.NotRunning:
-                if not self.auto_process.waitForFinished(3000):
-                    if not self._signal_auto_process_group(signal.SIGKILL):
-                        self.auto_process.kill()
-                    self.auto_process.waitForFinished(1000)
-            # A mocked worker or an abnormal shutdown may not emit finished.
-            # Persist a deterministic cancellation record before the event loop
-            # goes away; duplicate terminal records are already suppressed.
-            if self._auto_batch_active:
-                if self._auto_current_plan is not None:
-                    self._record_auto_terminal(
-                        self._auto_current_plan, "cancelled", "关闭 App；有效中间结果已保留"
-                    )
-                    self._auto_current_plan = None
-                self._finish_auto_batch(cancelled=True)
         self.frame_timer.stop()
         event.accept()
 

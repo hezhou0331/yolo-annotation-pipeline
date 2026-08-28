@@ -7,12 +7,20 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
 
 import cv2
 import numpy as np
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from atec_pipeline.runtime import interpreter_path
+
 
 try:
     from .live_yolo11_seg import class_name_summary
@@ -21,7 +29,7 @@ except ImportError:  # Direct script execution.
     from live_yolo11_seg import class_name_summary
     from orbbec_stream_protocol import recv_packet
 
-DEFAULT_ORBBEC_PYTHON = Path("~/miniforge3/envs/orbbec/bin/python").expanduser()
+DEFAULT_ORBBEC_PYTHON = interpreter_path("orbbec")
 
 
 def build_stream_command(

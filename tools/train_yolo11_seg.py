@@ -13,15 +13,20 @@ import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
+import sys
 from typing import Any
 
 import yaml
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from atec_pipeline.object_config import is_supported_class_prefix, load_class_map
+from atec_pipeline.path_compat import infer_project_root, resolve_compatible_path
+
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
-OFFICIAL_CLASSES = {
-    0: "can", 1: "watermelon_rind", 2: "meal_box", 3: "red_paper_bag",
-    4: "blue_bin", 5: "green_bin", 6: "red_bin",
-}
+OFFICIAL_CLASSES = load_class_map(ROOT / "configs" / "atec_objects.yaml")
 
 
 def resolve_active_training_names(
@@ -55,9 +60,12 @@ def write_training_dataset_yaml(
     source_path = source_path.expanduser().resolve()
     training_data = dict(data)
     root_value = training_data.get("path", source_path.parent)
-    root = Path(root_value).expanduser()
-    if not root.is_absolute():
-        root = (source_path.parent / root).resolve()
+    root = resolve_compatible_path(
+        root_value,
+        base=source_path.parent,
+        repository_root=ROOT,
+        project_root=infer_project_root(source_path, repository_root=ROOT),
+    )
     training_data["path"] = str(root)
     training_data["names"] = active_names
     if training_data.get("test") == training_data.get("val"):
@@ -101,9 +109,12 @@ def parse_args():
 def resolve_dataset(data_path: Path):
     data_path = data_path.expanduser().resolve()
     data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
-    root = Path(data.get("path", data_path.parent)).expanduser()
-    if not root.is_absolute():
-        root = (data_path.parent / root).resolve()
+    root = resolve_compatible_path(
+        data.get("path", data_path.parent),
+        base=data_path.parent,
+        repository_root=ROOT,
+        project_root=infer_project_root(data_path, repository_root=ROOT),
+    )
     return data_path, data, root
 
 
@@ -377,7 +388,12 @@ def inspect_scene_reports(root: Path) -> dict:
         scene_raw = data.get("scene")
         split = str(data.get("split", ""))
         accepted = int(data.get("frame_status_counts", {}).get("accepted", 0))
-        scene = str(Path(scene_raw).expanduser().resolve()) if scene_raw else ""
+        scene = str(resolve_compatible_path(
+            scene_raw,
+            base=path.parent,
+            repository_root=ROOT,
+            project_root=infer_project_root(path, repository_root=ROOT),
+        )) if scene_raw else ""
         session_id = str(data.get("capture_session_id") or "")
         video_id = str(data.get("source_video_id") or "")
         record = {
@@ -428,8 +444,10 @@ def main():
         raise SystemExit("dataset.yaml没有names")
     if sorted(names) != list(range(len(names))):
         raise SystemExit("dataset.yaml的类别ID必须从0连续编号")
-    if names != OFFICIAL_CLASSES:
-        raise SystemExit(f"正式训练只允许当前固定7类，实际names={names}")
+    if not is_supported_class_prefix(names, OFFICIAL_CLASSES):
+        raise SystemExit(
+            f"正式训练类别必须是当前9类配置的连续前缀，实际names={names}"
+        )
 
     reviewed_negatives, negative_report = load_reviewed_negatives(args.reviewed_negatives, root)
     report: dict = {

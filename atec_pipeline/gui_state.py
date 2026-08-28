@@ -17,6 +17,9 @@ from typing import Iterable, Sequence
 
 import yaml
 
+from .object_config import load_class_map
+from .path_compat import infer_project_root, portable_path, resolve_compatible_path
+
 
 @dataclass(frozen=True)
 class ObjectClass:
@@ -280,7 +283,11 @@ def load_scene_human_review_completion(
     if current_report is None or not current_report.is_file():
         return HumanReviewCompletion(marker, False, "export_report_missing", completed_at)
     try:
-        recorded_report = Path(str(data["export_report"])).expanduser().resolve()
+        recorded_report = resolve_compatible_path(
+            str(data["export_report"]),
+            base=marker.parent,
+            project_root=root,
+        )
         recorded_mtime = int(data["export_report_mtime_ns"])
         current_mtime = current_report.stat().st_mtime_ns
     except (KeyError, OSError, TypeError, ValueError):
@@ -304,11 +311,11 @@ def mark_scene_human_review_complete(project_root: Path, scene_dir: Path) -> Pat
     marker = _human_review_marker_path(scene)
     marker.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "scene": scene.name,
         "class_name": scene.parent.name,
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "export_report": str(report.resolve()),
+        "export_report": portable_path(report, relative_to=marker.parent, project_root=root),
         "export_report_mtime_ns": report.stat().st_mtime_ns,
         "frame_status_counts": {
             "accepted": summary.accepted,
@@ -416,37 +423,12 @@ def scene_workflow_state(project_root: Path, scene_dir: Path) -> SceneWorkflowSt
     )
 
 
-def _snapshot_project_root(report: Path) -> Path | None:
-    """Infer the local ``projects/atec_real`` root from a scene report.
-
-    Older exports recorded the producer machine's absolute paths.  A released
-    snapshot must still be usable after extraction elsewhere, so absolute
-    paths that no longer exist are remapped by their ``data/`` or
-    ``datasets/`` suffix.
-    """
-    resolved = Path(report).expanduser().resolve()
-    for parent in (resolved.parent, *resolved.parents):
-        if parent.name in {"data", "datasets"}:
-            return parent.parent
-    return None
-
-
 def _resolved_report_path(raw_path: str, report: Path) -> Path:
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        return (report.parent / path).resolve()
-    if path.is_file():
-        return path.resolve()
-    project_root = _snapshot_project_root(report)
-    if project_root is not None:
-        parts = path.parts
-        for marker in ("data", "datasets"):
-            if marker in parts:
-                suffix = Path(*parts[parts.index(marker):])
-                candidate = (project_root / suffix).resolve()
-                if candidate.exists():
-                    return candidate
-    return path.resolve()
+    return resolve_compatible_path(
+        raw_path,
+        base=report.parent,
+        project_root=infer_project_root(report),
+    )
 
 
 def load_mask_progress(report_path: Path) -> MaskProgress:
@@ -754,17 +736,13 @@ def discard_failed_empty_capture(session: CaptureSession) -> bool:
 def load_object_classes(config_path: Path) -> tuple[ObjectClass, ...]:
     """Load the numeric class order and Chinese display names from YAML."""
     data = yaml.safe_load(Path(config_path).expanduser().read_text(encoding="utf-8")) or {}
-    raw_classes = data.get("classes", {})
+    classes = load_class_map(config_path)
     objects = data.get("objects", {})
     result: list[ObjectClass] = []
-    for raw_id, name in raw_classes.items():
-        class_id = int(raw_id)
+    for class_id, name in classes.items():
         object_info = objects.get(name, {}) or {}
         chinese_name = str(object_info.get("chinese_name", name))
-        result.append(ObjectClass(class_id, str(name), chinese_name))
-    result.sort(key=lambda item: item.class_id)
-    if not result:
-        raise ValueError(f"配置中没有classes: {config_path}")
+        result.append(ObjectClass(class_id, name, chinese_name))
     return tuple(result)
 
 

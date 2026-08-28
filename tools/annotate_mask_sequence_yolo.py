@@ -10,8 +10,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 

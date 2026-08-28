@@ -23,6 +23,7 @@ if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
 from annotate_multinstance_project import add_optional, resolve_path, safe_name
+from atec_pipeline.runtime import resolve_sam2_python
 
 FrameRange = tuple[str, str | None]
 
@@ -350,8 +351,9 @@ def _sam2_command(
     start: int,
     max_frames: int,
 ) -> list[str]:
-    default_python = Path.home() / "miniforge3" / "envs" / "yolo11" / "bin" / "python"
-    sam2_python = resolve_path(common.get("sam2_python", default_python), manifest_dir, required=True)
+    sam2_python = resolve_sam2_python(
+        common.get("sam2_python"), manifest_dir=manifest_dir
+    )
     sam2_model = resolve_path(
         common.get("sam2_model", WORKSPACE / "models" / "sam2.1_t.pt"),
         manifest_dir,

@@ -17,7 +17,7 @@ cd /path/to/YOLO_Annotation_Pipeline
 → 验证 → 训练 → 实时识别
 ```
 
-固定七类从 `configs/atec_objects.yaml` 读取：
+当前九类从 `configs/atec_objects.yaml` 读取，App 不维护第二份硬编码类别表：
 
 | 按键 | 类别 |
 |---:|---|
@@ -28,8 +28,23 @@ cd /path/to/YOLO_Annotation_Pipeline
 | 5 | `blue_bin` |
 | 6 | `green_bin` |
 | 7 | `red_bin` |
+| 8 | `purple_paper_bag`（紫色袋子，比赛干扰项） |
+| 9 | `sand_bottle`（沙瓶，比赛干扰项） |
 
 选择类别后，场次列表只显示该类别，并分为“未标记完成”“已标记完成”和“已经过人工 Review”。“已标记完成”仅表示必需关键帧 Mask 已保存，不代表传播结果全部正确；只有显式确认整场检查完成后，场次才进入“已经过人工 Review”。
+
+历史七类数据仍可直接读取、Review、验证和阶段训练。新增场次使用九类 Manifest；只有紫色袋子、沙瓶也分别拥有有效 train/val 数据后，训练结果才是完整九类模型。
+
+### 薄 App 与 Debug 边界
+
+```text
+GUI：选择、确认、状态、启动/停止、日志
+workflow_commands.py：纯命令规划，不导入Qt、不写数据
+atec-pipeline：统一命令分发
+tools/：采集、SAM2、切分、导出、验证、训练算法
+```
+
+点击“继续自动处理”后，界面应立即展开日志并显示“正在启动/运行中：SAM2传播与YOLO导出”。验证集切分也通过 `atec-pipeline split` 子进程执行，GUI 不在自身进程中移动训练文件。若按钮异常，优先查看日志中显示的完整命令、程序路径、退出码和错误信息。
 
 ## 2. RGB-D 采集
 
@@ -140,7 +155,7 @@ Q/Esc      退出
 
 ## 5. 准备训练数据与训练
 
-点击“自动准备训练数据”后，App 会扫描全部类别，而不只扫描当前界面类别。切分以完整场次、`capture_session_id` 和 `source_video_id` 为不可拆分单位，禁止把同一视频的相邻帧随机分到 train/val。
+点击“准备训练数据”后，App 会汇总全部类别中已经有 accepted 导出的场次，而不只扫描当前界面类别。未完成场次需要逐场处理；切分以完整场次、`capture_session_id` 和 `source_video_id` 为不可拆分单位，禁止把同一视频的相邻帧随机分到 train/val。
 
 训练按钮只有在以下条件满足后解锁：
 
@@ -149,7 +164,7 @@ Q/Esc      退出
 - 没有场次或来源 ID 跨 split 泄漏；
 - 标签类别和格式合法。
 
-训练默认使用官方 YOLO11s-seg baseline。阶段性数据只有部分类别时，模型也只代表这些实际类别，不能称为完整七类模型。
+训练默认使用官方 YOLO11s-seg baseline。阶段性数据只有部分类别时，模型也只代表这些实际类别；当前5类权重不是7类或9类模型，当前7类数据训练出的模型也不能称为完整9类模型。
 
 ## 6. 实时识别
 

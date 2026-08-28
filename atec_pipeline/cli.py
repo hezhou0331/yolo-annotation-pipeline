@@ -6,25 +6,15 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+from atec_pipeline.object_config import class_names
+from atec_pipeline.runtime import interpreters
+
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ORBBEC_PY = Path.home() / "miniforge3/envs/orbbec/bin/python"
-DEFAULT_FP_PY = Path.home() / "miniforge3/envs/foundationpose/bin/python"
-DEFAULT_YOLO_PY = Path.home() / "miniforge3/envs/yolo11/bin/python"
 DEFAULT_YELLOW_CAPTURE = ROOT / "projects/atec_real/data/scenes/yellow_can_train_01"
-
-
-def env_path(name: str, default: Path) -> Path:
-    return Path(os.environ.get(name, str(default))).expanduser().resolve()
-
-
-def interpreters() -> dict[str, Path]:
-    return {
-        "orbbec": env_path("ATEC_ORBBEC_PY", DEFAULT_ORBBEC_PY),
-        "foundationpose": env_path("ATEC_FP_PY", DEFAULT_FP_PY),
-        "yolo11": env_path("ATEC_YOLO_PY", DEFAULT_YOLO_PY),
-    }
+OBJECT_CLASS_NAMES = class_names(ROOT / "configs" / "atec_objects.yaml")
 
 
 def run(cmd: list[str | Path], *, check: bool = True) -> int:
@@ -219,6 +209,25 @@ def full_run(args: argparse.Namespace) -> int:
     return run(cmd)
 
 
+def split_dataset(args: argparse.Namespace) -> int:
+    """Delegate whole-scene train/val splitting to its standalone CLI tool."""
+
+    cmd: list[str | Path] = [
+        interpreters()["yolo11"],
+        ROOT / "tools" / "split_dataset_by_scene.py",
+        "--data",
+        args.data,
+    ]
+    if args.auto:
+        cmd.extend(["--auto", "--target-val-ratio", str(args.target_val_ratio)])
+    if args.val_scenes:
+        cmd.extend(["--val-scenes", *args.val_scenes])
+    if args.val_videos:
+        cmd.extend(["--val-videos", *args.val_videos])
+    add_bool_flag(cmd, args.apply, "--apply")
+    return run(cmd)
+
+
 def validate(args: argparse.Namespace) -> int:
     cmd = [interpreters()["yolo11"], ROOT / "tools/train_yolo11_seg.py", "--data", args.data,
            "--model", args.model, "--validate-only", "--require-project-reports", "--require-source-ids"]
@@ -253,13 +262,24 @@ def evaluate(args: argparse.Namespace) -> int:
 
 
 def smoke_test(_: argparse.Namespace) -> int:
+    cli_python = Path(sys.executable)
+    app_python = Path(os.environ.get("ATEC_APP_PY", "/usr/bin/python3")).expanduser()
+    runtimes = interpreters()
     jobs = [
-        [interpreters()["foundationpose"], ROOT / "tests/test_capture_safety.py"],
-        [interpreters()["foundationpose"], ROOT / "tests/test_prepare_project_single_class.py"],
-        [interpreters()["yolo11"], ROOT / "tests/test_sam2_recovery.py"],
-        [interpreters()["yolo11"], ROOT / "tests/test_annotation_pipeline.py"],
-        [interpreters()["foundationpose"], ROOT / "tests/test_dataset_safety.py"],
-        [interpreters()["yolo11"], ROOT / "tests/test_xcx_integration.py"],
+        [cli_python, ROOT / "tests/test_object_config.py"],
+        [cli_python, ROOT / "tests/test_workflow_commands.py"],
+        [app_python, ROOT / "tests/test_gui_app.py"],
+        [runtimes["foundationpose"], ROOT / "tests/test_capture_safety.py"],
+        [runtimes["foundationpose"], ROOT / "tests/test_prepare_project_single_class.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_sam2_recovery.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_annotation_pipeline.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_path_portability.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_runtime.py"],
+        [runtimes["foundationpose"], ROOT / "tests/test_dataset_safety.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_xcx_integration.py"],
+        [cli_python, ROOT / "tests/test_git_safety.py"],
+        [ROOT / "tests/test_public_portability.sh"],
+        [ROOT / "tests/test_download_atec_data.sh"],
     ]
     for cmd in jobs:
         run(cmd)
@@ -299,8 +319,8 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("--split", choices=["train", "val", "test"], default="train")
     x.add_argument("--can-tracker", choices=["sam2", "foundationpose"], default="sam2")
     x.add_argument("--instances-per-class", type=int, default=1)
-    x.add_argument("--only-class", choices=["can", "watermelon_rind", "meal_box", "red_paper_bag", "blue_bin", "green_bin", "red_bin"], help="只启用一个类别")
-    x.add_argument("--scene-class", choices=["can", "watermelon_rind", "meal_box", "red_paper_bag", "blue_bin", "green_bin", "red_bin"], help="将场景写入按类别目录")
+    x.add_argument("--only-class", choices=OBJECT_CLASS_NAMES, help="只启用一个类别")
+    x.add_argument("--scene-class", choices=OBJECT_CLASS_NAMES, help="将场景写入按类别目录")
     x.add_argument("--capture-session-id"); x.add_argument("--source-video-id")
     x.add_argument("--include-bins", action="store_true"); x.add_argument("--force-manifest", action="store_true")
     x.set_defaults(func=init_project)
@@ -366,6 +386,15 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("manifest", type=Path); x.add_argument("--allow-missing-key-masks", action="store_true")
     x.add_argument("--dry-run", action="store_true", help="只检查分段和命令，不运行跟踪器或覆盖标签")
     x.set_defaults(func=full_run)
+
+    x = sub.add_parser("split", help="按完整场次/采集视频准备train/val")
+    x.add_argument("data", type=Path)
+    x.add_argument("--auto", action="store_true", help="按类别自动选择约20%%验证集")
+    x.add_argument("--target-val-ratio", type=float, default=0.20)
+    x.add_argument("--val-scenes", nargs="*", default=[])
+    x.add_argument("--val-videos", nargs="*", default=[])
+    x.add_argument("--apply", action="store_true", help="确认后执行；默认只预览")
+    x.set_defaults(func=split_dataset)
 
     x = sub.add_parser("validate", help="只做YOLO数据安全检查，不训练")
     x.add_argument("data", type=Path); x.add_argument("--model", type=Path, default=ROOT / "models/yolo11s-seg.pt")

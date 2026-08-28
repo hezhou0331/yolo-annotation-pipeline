@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 from collections import defaultdict
 from pathlib import Path
+import sys
 from typing import Any
 
 import cv2
@@ -19,20 +21,71 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_CLASSES = {
-    0: "can",
-    1: "watermelon_rind",
-    2: "meal_box",
-    3: "red_paper_bag",
-    4: "blue_bin",
-    5: "green_bin",
-    6: "red_bin",
-}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from atec_pipeline.object_config import (
+    is_supported_class_prefix,
+    load_class_map,
+    normalize_class_map,
+)
+from atec_pipeline.path_compat import (
+    infer_project_root,
+    portable_path,
+    resolve_compatible_path,
+)
+
+EXPECTED_CLASSES = load_class_map(ROOT / "configs" / "atec_objects.yaml")
 
 
 def resolve_path(value: str | Path, base: Path) -> Path:
-    path = Path(value).expanduser()
-    return path.resolve() if path.is_absolute() else (base / path).resolve()
+    return resolve_compatible_path(
+        value,
+        base=base,
+        repository_root=ROOT,
+        project_root=infer_project_root(base, repository_root=ROOT),
+    )
+
+
+def stored_path(
+    value: str | Path,
+    *,
+    relative_to: Path,
+    project_root: Path,
+) -> str:
+    """Serialize repository/project-owned paths relative to one artifact."""
+
+    return portable_path(
+        value,
+        relative_to=relative_to,
+        repository_root=ROOT,
+        project_root=project_root,
+    )
+
+
+def serialize_proposal_record(
+    record: dict[str, Any],
+    *,
+    relative_to: Path,
+    project_root: Path,
+    proposal_root_path: Path,
+) -> dict[str, Any]:
+    """Return a v2 proposal record whose paths are local to its container."""
+
+    payload = dict(record)
+    payload["format_version"] = 2
+    payload["path_base"] = "."
+    for field in ("manifest", "scene", "image"):
+        payload[field] = stored_path(
+            payload[field], relative_to=relative_to, project_root=project_root
+        )
+    for field in ("candidate_mask", "overlay"):
+        payload[field] = stored_path(
+            payload[field],
+            relative_to=relative_to,
+            project_root=proposal_root_path,
+        )
+    return payload
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -43,16 +96,16 @@ def load_yaml(path: Path) -> dict[str, Any]:
 
 
 def normalized_classes(raw: Any) -> dict[int, str]:
-    if not isinstance(raw, dict):
-        raise ValueError("classes必须是ID到名称的映射")
-    return {int(key): str(value) for key, value in raw.items()}
+    """Backward-compatible public wrapper around the canonical normalizer."""
+
+    return normalize_class_map(raw)
 
 
 def validate_teacher_config(config: dict[str, Any]) -> None:
-    classes = normalized_classes(config.get("official_classes"))
-    if classes != EXPECTED_CLASSES:
-        raise ValueError(f"教师配置必须严格保持当前7类，实际为: {classes}")
-    mapping = {str(k): str(v) for k, v in config.get("source_to_official", {}).items()}
+    raw_mapping = config.get("source_to_official")
+    if not isinstance(raw_mapping, dict) or not raw_mapping:
+        raise ValueError("教师配置必须包含source_to_official映射")
+    mapping = {str(k): str(v) for k, v in raw_mapping.items()}
     unknown_targets = sorted(set(mapping.values()) - set(EXPECTED_CLASSES.values()))
     if unknown_targets:
         raise ValueError(f"映射包含非正式类别: {unknown_targets}")
@@ -60,8 +113,17 @@ def validate_teacher_config(config: dict[str, Any]) -> None:
     overlap = sorted(set(mapping) & negatives)
     if overlap:
         raise ValueError(f"同一xcx类别不能同时是正式映射和负样本: {overlap}")
-    if not config.get("detectors"):
+    detectors = config.get("detectors")
+    if not isinstance(detectors, list) or not detectors:
         raise ValueError("教师配置没有detectors")
+    for detector in detectors:
+        if not isinstance(detector, dict):
+            raise ValueError("教师配置detectors必须是映射列表")
+        allowed = {str(value) for value in detector.get("allowed_official_classes", [])}
+        unknown_allowed = sorted(allowed - set(EXPECTED_CLASSES.values()))
+        if unknown_allowed:
+            name = str(detector.get("name") or "未命名检测器")
+            raise ValueError(f"检测器{name}包含非正式类别: {unknown_allowed}")
 
 
 def load_context(manifest_path: Path, segments_path: Path, config_path: Path) -> dict[str, Any]:
@@ -73,8 +135,8 @@ def load_context(manifest_path: Path, segments_path: Path, config_path: Path) ->
     config = load_yaml(config_path)
     validate_teacher_config(config)
     manifest_classes = normalized_classes(manifest.get("classes"))
-    if manifest_classes != EXPECTED_CLASSES:
-        raise ValueError("manifest不是当前固定7类，拒绝生成候选Mask")
+    if not is_supported_class_prefix(manifest_classes, EXPECTED_CLASSES):
+        raise ValueError("manifest类别不是当前正式配置的连续前缀，拒绝生成候选Mask")
     project = manifest.get("project", {})
     scene = resolve_path(project["scene"], manifest_path.parent)
     instances = manifest.get("instances", [])
@@ -91,16 +153,22 @@ def load_context(manifest_path: Path, segments_path: Path, config_path: Path) ->
         "segments": segments,
         "config": config,
         "scene": scene,
+        "project_root": infer_project_root(manifest_path, repository_root=ROOT),
         "instance_by_id": instance_by_id,
     }
 
 
-def missing_instances_by_class(segment: dict[str, Any], instance_by_id: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+def missing_instances_by_class(
+    segment: dict[str, Any],
+    instance_by_id: dict[str, dict[str, Any]],
+    *,
+    base: Path,
+) -> dict[str, list[str]]:
     result: dict[str, list[str]] = defaultdict(list)
     missing = set(str(x) for x in segment.get("missing_key_masks", []))
     if not missing:
         for instance_id, path in segment.get("required_key_mask_paths", {}).items():
-            if path and not Path(path).exists():
+            if path and not resolve_path(path, base).exists():
                 missing.add(str(instance_id))
     for instance_id in sorted(missing):
         item = instance_by_id.get(instance_id)
@@ -249,6 +317,7 @@ def propose(args: argparse.Namespace) -> int:
 
     root = proposal_root(context, args.output)
     root.mkdir(parents=True, exist_ok=True)
+    project_root_path = context["project_root"]
     proposals: list[dict[str, Any]] = []
     hard_negative_records: list[dict[str, Any]] = []
     crosschecks: list[dict[str, Any]] = []
@@ -257,7 +326,11 @@ def propose(args: argparse.Namespace) -> int:
     for segment in context["segments"].get("segments", []):
         if selected_segments and int(segment["segment_id"]) not in selected_segments:
             continue
-        missing_by_class = missing_instances_by_class(segment, context["instance_by_id"])
+        missing_by_class = missing_instances_by_class(
+            segment,
+            context["instance_by_id"],
+            base=context["segments_path"].parent,
+        )
         if not missing_by_class:
             continue
         frame_id = str(segment["start_id"])
@@ -306,7 +379,6 @@ def propose(args: argparse.Namespace) -> int:
                 overlay = render_overlay(image, mask, detection["bbox_xyxy"], f"{official_class} {detection['confidence']:.2f}")
                 cv2.imwrite(str(overlay_path), overlay)
                 record = {
-                    "format_version": 1,
                     "proposal_id": proposal_id,
                     "status": "candidate_requires_manual_review",
                     "manifest": str(context["manifest_path"]),
@@ -321,18 +393,44 @@ def propose(args: argparse.Namespace) -> int:
                     "requires_manual_instance_assignment": True,
                     "teacher_detection": detection,
                     "review_command_template": (
-                        f"{ROOT / 'scripts/atec-pipeline'} mask {image_path} REPLACE_ACCEPTED_MASK_PATH "
-                        f"--mask-input {mask_path}"
+                        "./scripts/atec-pipeline mask "
+                        f"{shlex.quote(stored_path(image_path, relative_to=ROOT, project_root=project_root_path))} "
+                        "REPLACE_ACCEPTED_MASK_PATH --mask-input "
+                        f"{shlex.quote(stored_path(mask_path, relative_to=ROOT, project_root=project_root_path))}"
                     ),
                 }
-                proposal_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                record["proposal_json"] = str(proposal_path)
-                proposals.append(record)
+                proposal_payload = serialize_proposal_record(
+                    record,
+                    relative_to=proposal_path.parent,
+                    project_root=project_root_path,
+                    proposal_root_path=root,
+                )
+                proposal_path.write_text(
+                    json.dumps(proposal_payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                report_record = serialize_proposal_record(
+                    record,
+                    relative_to=root,
+                    project_root=project_root_path,
+                    proposal_root_path=root,
+                )
+                report_record["proposal_json"] = stored_path(
+                    proposal_path, relative_to=root, project_root=root
+                )
+                proposals.append(report_record)
 
+    report_summary = {
+        field: stored_path(value, relative_to=root, project_root=project_root_path)
+        for field, value in summary.items()
+        if field != "asset_errors"
+    }
+    report_summary["asset_errors"] = summary["asset_errors"]
     report = {
-        **summary,
-        "format_version": 1,
-        "proposal_root": str(root),
+        **report_summary,
+        "format_version": 2,
+        "path_base": ".",
+        "proposal_root": stored_path(root, relative_to=root, project_root=root),
         "proposal_count": len(proposals),
         "hard_negative_detection_count": len(hard_negative_records),
         "crosscheck_detection_count": len(crosschecks),
@@ -358,7 +456,9 @@ def propose(args: argparse.Namespace) -> int:
 def promote(args: argparse.Namespace) -> int:
     proposal_path = args.proposal_json.expanduser().resolve()
     proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
-    manifest_path = Path(proposal["manifest"]).expanduser().resolve()
+    # v2 paths are relative to the proposal JSON.  The same resolver retains
+    # v1 absolute-path support and relocates stale repository-owned paths.
+    manifest_path = resolve_path(proposal["manifest"], proposal_path.parent)
     manifest = load_yaml(manifest_path)
     instances = {str(item["instance_id"]): item for item in manifest.get("instances", [])}
     instance = instances.get(args.instance_id)
@@ -376,22 +476,32 @@ def promote(args: argparse.Namespace) -> int:
     destination = key_dir / f"{proposal['frame_id']}.png"
     if destination.exists():
         raise SystemExit(f"已接受Mask存在，拒绝覆盖: {destination}")
-    source = Path(proposal["candidate_mask"]).expanduser().resolve()
+    source = resolve_path(proposal["candidate_mask"], proposal_path.parent)
     mask = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
     if mask is None or not np.any(mask > 0):
         raise SystemExit(f"候选Mask不存在或为空: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
+    receipt_path = destination.with_suffix(".promotion.json")
+    receipt_project_root = infer_project_root(manifest_path, repository_root=ROOT)
     receipt = {
-        "format_version": 1,
+        "format_version": 2,
+        "path_base": ".",
         "action": "promote_reviewed_candidate",
-        "proposal_json": str(proposal_path),
+        "proposal_json": stored_path(
+            proposal_path,
+            relative_to=receipt_path.parent,
+            project_root=receipt_project_root,
+        ),
         "instance_id": args.instance_id,
         "official_class": proposal["official_class"],
-        "destination": str(destination),
+        "destination": stored_path(
+            destination,
+            relative_to=receipt_path.parent,
+            project_root=receipt_project_root,
+        ),
         "reviewer_confirmation_required": True,
     }
-    receipt_path = destination.with_suffix(".promotion.json")
     receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"已晋升人工确认候选Mask：{destination}")
     return 0

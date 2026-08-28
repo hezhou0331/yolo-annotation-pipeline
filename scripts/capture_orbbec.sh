@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MAMBA="${MAMBA:-$HOME/miniforge3/bin/mamba}"
+ORBBEC_PY="${ATEC_ORBBEC_PY:-${ATEC_ORBBEC_PYTHON:-$HOME/miniforge3/envs/orbbec/bin/python}}"
 OUTPUT="${1:-$ROOT/projects/atec_real/data/scenes/capture_001}"
 if [[ $# -gt 0 ]]; then shift; fi
 OUTPUT="$(realpath -m -- "$OUTPUT")"
@@ -12,5 +12,5 @@ cleanup() { find "$WORKDIR" -depth -delete 2>/dev/null || true; }
 trap cleanup EXIT
 (
   cd "$WORKDIR"
-  "$MAMBA" run -n orbbec python "$ROOT/tools/capture_orbbec_rgbd.py" --output "$OUTPUT" "$@"
+  "$ORBBEC_PY" "$ROOT/tools/capture_orbbec_rgbd.py" --output "$OUTPUT" "$@"
 )

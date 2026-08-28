@@ -25,9 +25,9 @@ for path in "${tracked[@]}"; do
   fi
 done
 
-ABS_USER_PATTERN='/'"home/hezhou/桌面/ATEC"
-if git ls-files -z | xargs -0 -r rg -n "${ABS_USER_PATTERN}|gho_[A-Za-z0-9_]+" --no-messages; then
-  echo "[敏感检查失败] 发现用户绝对路径或疑似GitHub token。" >&2
+TOKEN_PREFIX="gh""o_"
+if git grep -I -n -F -e "$HOME/" -e "$TOKEN_PREFIX" -- . ':(exclude)scripts/check_git_safety.sh'; then
+  echo "[敏感检查失败] 发现当前用户绝对路径或疑似GitHub token。" >&2
   status=1
 fi
 
