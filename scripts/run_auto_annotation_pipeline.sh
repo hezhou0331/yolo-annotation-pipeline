@@ -48,13 +48,13 @@ else
   SEGMENT_REPORT="$REPORT_DIR/segments.json"
 fi
 
-SEG_ARGS=(--manifest "$MANIFEST" --output "$SEGMENT_REPORT")
+SEG_ARGS=(segment "$MANIFEST" --output "$SEGMENT_REPORT")
 if [[ "$ALLOW_MISSING" != true ]]; then SEG_ARGS+=(--require-ready); fi
 ANNOTATE_ARGS=(--manifest "$MANIFEST")
 if [[ "$DRY_RUN" == true ]]; then ANNOTATE_ARGS+=(--dry-run); fi
 
 echo "[1/2] 自动分段并检查每段关键mask"
-"$FP_PY" "$ROOT/tools/segment_rgbd_sequence.py" "${SEG_ARGS[@]}"
+"$ROOT/scripts/atec-pipeline" "${SEG_ARGS[@]}"
 echo "[2/2] FoundationPose/SAM2传播、质量过滤和多实例安全聚合"
 "$FP_PY" "$ROOT/tools/annotate_multinstance_project.py" "${ANNOTATE_ARGS[@]}"
 if [[ "$DRY_RUN" == true ]]; then

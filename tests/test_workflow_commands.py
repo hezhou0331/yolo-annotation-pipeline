@@ -65,6 +65,13 @@ def main() -> int:
         assert program == str(ROOT / "scripts/atec-pipeline")
         assert args == ["segment", str(manifest.resolve()), "--output", str(segments)]
 
+        full_run_script = (ROOT / "scripts/run_auto_annotation_pipeline.sh").read_text(
+            encoding="utf-8"
+        )
+        assert 'SEG_ARGS=(segment "$MANIFEST"' in full_run_script
+        assert '"$ROOT/scripts/atec-pipeline" "${SEG_ARGS[@]}"' in full_run_script
+        assert "tools/segment_rgbd_sequence.py" not in full_run_script
+
         dataset = root / "datasets/atec_yolo11_seg/dataset.yaml"
         program, args = build_split_command(
             ROOT,
