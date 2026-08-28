@@ -4,8 +4,9 @@
 
 ## 1. 启动
 
+在 IDE 或文件管理器中打开仓库根目录，并从该目录的终端运行：
+
 ```bash
-cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-app
 ```
 

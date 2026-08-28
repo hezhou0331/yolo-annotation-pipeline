@@ -41,8 +41,9 @@ runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt
 
 ## 最快开始
 
+在 VS Code、Codex 或文件管理器中打开仓库根目录，并在该目录的终端直接运行：
+
 ```bash
-cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-app
 ```
 
@@ -282,14 +283,12 @@ xcx/
 最短命令（默认使用五类阶段模型、外接摄像头、`conf=0.25`）：
 
 ```bash
-cd /path/to/YOLO_Annotation_Pipeline
 ./scripts/atec-live-yolo
 ```
 
 完整命令：
 
 ```bash
-cd /path/to/YOLO_Annotation_Pipeline
 "${ATEC_YOLO_PY:-$HOME/miniforge3/envs/yolo11/bin/python}" \
   tools/live_yolo11_seg.py \
   --model runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt \

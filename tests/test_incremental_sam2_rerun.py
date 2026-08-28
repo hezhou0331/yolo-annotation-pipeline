@@ -200,7 +200,8 @@ def main() -> int:
             (stage_masks / f"{frame_id}.png").write_bytes(f"old-{frame_id}".encode())
         key = np.zeros((12, 16), np.uint8)
         key[2:8, 3:10] = 255
-        cv2.imwrite(str(key_masks / "000001.png"), key)
+        for key_frame in ("000000", "000002"):
+            cv2.imwrite(str(key_masks / f"{key_frame}.png"), key)
         (scene / "project_reports").mkdir(parents=True)
         (scene / "project_reports/segments.json").write_text(json.dumps({
             "segments": [{"segment_id": 0, "start_id": "000000", "end_id": "000003"}]
@@ -238,8 +239,19 @@ def main() -> int:
             f"  key_mask_dir: {key_masks}\n",
             encoding="utf-8",
         )
+        action_file = root / "player_action.json"
+        action_file.write_text(json.dumps({
+            "action": "rerun_ranges",
+            "instance_id": "can_01",
+            "ranges": [
+                {"segment_id": "0", "start_frame": "000000", "end_before_frame": "000001"},
+                {"segment_id": "0", "start_frame": "000002", "end_before_frame": "000003"},
+            ],
+        }), encoding="utf-8")
         before_outside_inode = os.stat(stage_masks / "000003.png").st_ino
         aggregate_calls: list[list[str]] = []
+        sam2_calls: dict[int, int] = {}
+        attempt_dirs: dict[int, list[Path]] = {}
         original_tool_run = rerun_module._run
 
         def fake_run(command: list[str], *, dry_run: bool, env: dict[str, str]) -> None:
@@ -248,8 +260,13 @@ def main() -> int:
                 partial_dir = Path(command[command.index("--output-mask-dir") + 1])
                 start = int(command[command.index("--start") + 1])
                 count = int(command[command.index("--max-frames") + 1])
-                selected = frame_ids[start:start + count]
+                sam2_calls[start] = sam2_calls.get(start, 0) + 1
+                attempt_dirs.setdefault(start, []).append(partial_dir)
                 partial_dir.mkdir(parents=True, exist_ok=True)
+                if start == 2 and sam2_calls[start] == 1:
+                    (partial_dir / "000002.png").write_bytes(b"stale-partial")
+                    raise subprocess.CalledProcessError(1, command)
+                selected = frame_ids[start:start + count]
                 for frame_id in selected:
                     (partial_dir / f"{frame_id}.png").write_bytes(f"new-{frame_id}".encode())
                 partial_report = {
@@ -270,12 +287,12 @@ def main() -> int:
             assert rerun_module.main([
                 "--manifest", str(manifest),
                 "--instance-id", "can_01",
-                "--start-frame", "000001",
-                "--end-before-frame", "000003",
+                "--ranges-file", str(action_file),
             ]) == 0
         finally:
             rerun_module._run = original_tool_run
-        assert (stage_masks / "000001.png").read_bytes() == b"new-000001"
+        assert (stage_masks / "000000.png").read_bytes() == b"new-000000"
+        assert (stage_masks / "000001.png").read_bytes() == b"old-000001"
         assert (stage_masks / "000002.png").read_bytes() == b"new-000002"
         assert (stage_masks / "000003.png").read_bytes() == b"old-000003"
         assert os.stat(stage_masks / "000003.png").st_ino == before_outside_inode
@@ -285,8 +302,14 @@ def main() -> int:
         assert len(merged_report["records"]) == 4
         assert merged_report["output_mask_dir"] == str(stage_masks)
         assert merged_report["parameters"]["output_mask_dir"] == str(stage_masks)
+        assert [row["frames"] for row in merged_report["incremental_updates"]] == [
+            ["000000"], ["000002"],
+        ]
+        assert sam2_calls == {0: 1, 2: 2}
+        assert attempt_dirs[2][0] != attempt_dirs[2][1]
         assert len(aggregate_calls) == 1
         assert "--skip-tracking" in aggregate_calls[0]
+        assert not list(stage_masks.parent.glob(".incremental-*"))
 
     with tempfile.TemporaryDirectory(prefix="atec_incremental_failure_") as tmp:
         root = Path(tmp)
@@ -329,9 +352,14 @@ def main() -> int:
             encoding="utf-8",
         )
         before = {path.name: path.read_bytes() for path in stage_masks.iterdir()}
-        rerun_module._run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            subprocess.CalledProcessError(1, "fake-sam2")
-        )
+        failed_sam2_calls = 0
+
+        def fail_sam2(*_args: object, **_kwargs: object) -> None:
+            nonlocal failed_sam2_calls
+            failed_sam2_calls += 1
+            raise subprocess.CalledProcessError(1, "fake-sam2")
+
+        rerun_module._run = fail_sam2
         try:
             try:
                 rerun_module.main([
@@ -347,6 +375,56 @@ def main() -> int:
             rerun_module._run = original_tool_run
         after = {path.name: path.read_bytes() for path in stage_masks.iterdir()}
         assert after == before, "SAM2 failure must leave the formal mask tree/report untouched"
+        assert failed_sam2_calls == 2
+        assert not list(stage_masks.parent.glob(".incremental-*"))
+
+        signal_calls = 0
+
+        def fail_from_signal(*_args: object, **_kwargs: object) -> None:
+            nonlocal signal_calls
+            signal_calls += 1
+            raise subprocess.CalledProcessError(-15, "fake-sam2")
+
+        rerun_module._run = fail_from_signal
+        try:
+            try:
+                rerun_module.main([
+                    "--manifest", str(manifest),
+                    "--instance-id", "can_01",
+                    "--start-frame", "000000",
+                ])
+            except subprocess.CalledProcessError as error:
+                assert error.returncode == -15
+            else:
+                raise AssertionError("signal termination must be reported without retry")
+        finally:
+            rerun_module._run = original_tool_run
+        assert signal_calls == 1
+        assert {path.name: path.read_bytes() for path in stage_masks.iterdir()} == before
+        assert not list(stage_masks.parent.glob(".incremental-*"))
+
+        dry_run_calls = 0
+
+        def record_dry_run(
+            command: list[str], *, dry_run: bool, env: dict[str, str]
+        ) -> None:
+            nonlocal dry_run_calls
+            del command, env
+            assert dry_run
+            dry_run_calls += 1
+
+        rerun_module._run = record_dry_run
+        try:
+            assert rerun_module.main([
+                "--manifest", str(manifest),
+                "--instance-id", "can_01",
+                "--start-frame", "000000",
+                "--dry-run",
+            ]) == 0
+        finally:
+            rerun_module._run = original_tool_run
+        assert dry_run_calls == 1
+        assert {path.name: path.read_bytes() for path in stage_masks.iterdir()} == before
 
     with tempfile.TemporaryDirectory(prefix="atec_incremental_aggregate_failure_") as tmp:
         root = Path(tmp)

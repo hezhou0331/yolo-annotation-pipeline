@@ -499,18 +499,34 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for index, (start, end) in enumerate(ranges):
             selected = select_frame_range(frame_ids, start, end)
-            partial_dir = work / f"partial_{index:02d}"
-            command = _sam2_command(
-                instance=instance,
-                common=common,
-                manifest_dir=manifest_dir,
-                scene=scene,
-                key_mask_dir=key_mask_dir,
-                output_mask_dir=partial_dir,
-                start=frame_ids.index(start),
-                max_frames=len(selected),
-            )
-            _run(command, dry_run=False, env=env)
+            partial_dir: Path | None = None
+            for attempt in (1, 2):
+                attempt_dir = work / f"partial_{index:02d}_attempt_{attempt}"
+                command = _sam2_command(
+                    instance=instance,
+                    common=common,
+                    manifest_dir=manifest_dir,
+                    scene=scene,
+                    key_mask_dir=key_mask_dir,
+                    output_mask_dir=attempt_dir,
+                    start=frame_ids.index(start),
+                    max_frames=len(selected),
+                )
+                try:
+                    _run(command, dry_run=False, env=env)
+                except subprocess.CalledProcessError as error:
+                    if attempt != 1 or error.returncode != 1:
+                        raise
+                    print(
+                        f"[局部传播] 区间 {format_frame_range(frame_ids, start, end)} "
+                        "首次生成候选失败(exit=1)；未提交结果，自动重试一次。",
+                        flush=True,
+                    )
+                    continue
+                partial_dir = attempt_dir
+                break
+            if partial_dir is None:
+                raise AssertionError("SAM2候选重试结束但没有可用输出")
             partial_report_path = partial_dir / "sam2_propagation_report.json"
             if not partial_report_path.is_file():
                 raise RuntimeError(f"局部SAM2未生成报告：{partial_report_path}")
