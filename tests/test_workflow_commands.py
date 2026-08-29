@@ -11,6 +11,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import atec_pipeline.cli as cli  # noqa: E402
 from atec_pipeline.cli import parser as cli_parser  # noqa: E402
 from atec_pipeline.workflow_commands import (  # noqa: E402
     build_pipeline_command,
@@ -96,6 +97,58 @@ def main() -> int:
         except SystemExit as exc:
             assert exc.code == 0
         assert "--target-val-ratio" in help_output.getvalue()
+
+        captured: list[list[str]] = []
+        original_run = cli.run
+        cli.run = lambda command, **_kwargs: captured.append([str(item) for item in command]) or 0
+        try:
+            default_train = cli_parser().parse_args(["train", "dataset.yaml"])
+            assert default_train.resume is False
+            assert default_train.func(default_train) == 0
+            resumed_train = cli_parser().parse_args([
+                "train",
+                "dataset.yaml",
+                "--project",
+                "runs/segment",
+                "--name",
+                "atec_9class_reviewed_20260829",
+                "--resume",
+            ])
+            assert resumed_train.resume is True
+            assert resumed_train.func(resumed_train) == 0
+        finally:
+            cli.run = original_run
+        assert "--resume" not in captured[0]
+        assert captured[1][-1] == "--resume"
+        assert captured[1][captured[1].index("--project") + 1].endswith("runs/segment")
+        assert captured[1][captured[1].index("--name") + 1] == "atec_9class_reviewed_20260829"
+
+        smoke_commands: list[list[str]] = []
+        cli.run = lambda command, **_kwargs: smoke_commands.append([str(item) for item in command]) or 0
+        try:
+            smoke = cli_parser().parse_args(["smoke-test"])
+            assert smoke.func(smoke) == 0
+        finally:
+            cli.run = original_run
+        routed_basenames = {
+            Path(part).name for command in smoke_commands for part in command
+        }
+        assert {
+            "test_split_dataset_by_scene.py",
+            "test_training_class_subset.py",
+            "test_live_yolo_launcher.py",
+            "test_validate_yolo11_seg_release.py",
+        } <= routed_basenames
+        assert all("best.pt" not in part for command in smoke_commands for part in command)
+        assert all(
+            Path(part).name != "train_yolo11_seg.py"
+            for command in smoke_commands
+            for part in command
+        )
+        assert not any(
+            Path(command[0]).name == "atec-pipeline" and command[1:2] == ["train"]
+            for command in smoke_commands
+        )
 
     print("WORKFLOW_COMMAND_ASSERTIONS_PASSED")
     return 0

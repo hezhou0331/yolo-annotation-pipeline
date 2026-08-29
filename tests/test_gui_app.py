@@ -29,7 +29,10 @@ def main() -> int:
         assert window.batch.value() == 4
         assert window.device.text() == "0"
         assert window.init_mode.currentText() == "baseline"
-        assert window.experiment.text() == "atec_4class_baseline_moredata_20260824"
+        assert window.experiment.text() == "atec_9class_reviewed_20260829"
+        train_program, train_args = window.command_for_train()
+        assert train_program == str(ROOT / "scripts/atec-pipeline")
+        assert train_args[train_args.index("--name") + 1] == "atec_9class_reviewed_20260829"
 
         # Daily operation is one thin page, not three workflow tabs.
         assert not isinstance(window.centralWidget(), QTabWidget)

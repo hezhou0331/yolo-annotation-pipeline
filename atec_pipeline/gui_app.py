@@ -436,7 +436,7 @@ class AtecMainWindow(QMainWindow):
         self.batch.setRange(1, 512)
         self.batch.setValue(4)
         self.device = QLineEdit("0")
-        self.experiment = QLineEdit("atec_4class_baseline_moredata_20260824")
+        self.experiment = QLineEdit("atec_9class_reviewed_20260829")
         form.addRow("数据集", self.dataset_label)
         form.addRow("初始化", self.init_mode)
         form.addRow("epochs", self.epochs)

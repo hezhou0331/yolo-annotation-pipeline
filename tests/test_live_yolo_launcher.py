@@ -14,6 +14,14 @@ LAUNCHER = ROOT / "scripts" / "atec-live-yolo"
 def main() -> int:
     assert LAUNCHER.is_file(), "missing scripts/atec-live-yolo"
     assert os.access(LAUNCHER, os.X_OK), "scripts/atec-live-yolo must be executable"
+    launcher_source = LAUNCHER.read_text(encoding="utf-8")
+    expected_model_default = (
+        'MODEL="${ATEC_YOLO_MODEL:-$ROOT/runs/segment/'
+        'atec_9class_reviewed_20260829/weights/best.pt}"'
+    )
+    assert launcher_source.count(expected_model_default) == 1, (
+        "launcher must default exactly once to the reviewed nine-class best.pt"
+    )
 
     with tempfile.TemporaryDirectory(prefix="atec_live_yolo_") as tmp_dir:
         tmp = Path(tmp_dir)

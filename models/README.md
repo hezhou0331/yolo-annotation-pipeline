@@ -13,7 +13,7 @@ third_party/FoundationPose/weights/2023-10-28-18-33-37/model_best.pth
 third_party/FoundationPose/weights/2024-01-11-20-02-45/model_best.pth
 ```
 
-当前四类 baseline 初始化权重：
+当前九类全量训练的官方 baseline 初始化权重：
 
 ```text
 models/yolo11s-seg.pt
@@ -23,10 +23,10 @@ SHA256 1caa81c0195412efa411b632bcfb8c184939dddb6ae41f6a80c41b211ff257c3
 训练结果：
 
 ```text
-runs/segment/atec_4class_baseline_20260824/weights/best.pt
+runs/segment/atec_9class_reviewed_20260829/weights/best.pt
 ```
 
-初始化权重和训练结果都不提交 GitHub。
+初始化权重和训练结果都不提交 Git 历史；九类 `best.pt` 通过 `model-20260829` GitHub Release 单独发布。历史 4/5/7 类 run 与权重继续保留，用于回滚和对照，不会被新实验覆盖。
 
 ## 模型角色
 

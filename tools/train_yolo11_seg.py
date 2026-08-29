@@ -73,8 +73,108 @@ def write_training_dataset_yaml(
     run_dir = run_dir.expanduser().resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     output = run_dir / "dataset_training.yaml"
-    output.write_text(yaml.safe_dump(training_data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    with output.open("x", encoding="utf-8") as handle:
+        handle.write(yaml.safe_dump(training_data, allow_unicode=True, sort_keys=False))
     return output
+
+
+def normalize_class_names(raw: Any) -> dict[int, str]:
+    if isinstance(raw, list):
+        return {index: str(name) for index, name in enumerate(raw)}
+    if isinstance(raw, dict):
+        try:
+            return {int(class_id): str(name) for class_id, name in raw.items()}
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"类别ID必须是整数: {raw}") from exc
+    raise RuntimeError(f"无法解析类别配置: {raw!r}")
+
+
+def validate_run_target(run_dir: Path, *, resume: bool) -> tuple[Path, Path, Path]:
+    """Validate a new-run destination or the only checkpoint accepted for resume."""
+    run_dir = run_dir.expanduser().resolve()
+    training_data = run_dir / "dataset_training.yaml"
+    last_weights = run_dir / "weights" / "last.pt"
+    if not resume:
+        if run_dir.exists():
+            raise RuntimeError(
+                f"训练run目录已存在，拒绝覆盖: {run_dir}；"
+                "请使用新的--name，或在该run中断后显式使用--resume"
+            )
+        return run_dir, training_data, last_weights
+    if not run_dir.is_dir():
+        raise RuntimeError(f"恢复训练要求同一project/name目录已存在: {run_dir}")
+    if not training_data.is_file():
+        raise RuntimeError(f"恢复训练缺少run-local dataset YAML: {training_data}")
+    if not last_weights.is_file() or last_weights.is_symlink():
+        raise RuntimeError(f"恢复训练只允许使用同一run的真实weights/last.pt: {last_weights}")
+    return run_dir, training_data, last_weights
+
+
+def claim_new_run_directory(run_dir: Path) -> None:
+    """Atomically reserve a validated new run before writing run-local files."""
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise RuntimeError(f"训练run目录已被创建，拒绝覆盖: {run_dir}") from exc
+
+
+def resume_training(yolo_class: Any, run_dir: Path, active_names: dict[int, str]) -> Any:
+    """Resume only the exact last.pt in ``run_dir`` without rewriting its data YAML."""
+    run_dir, training_data, last_weights = validate_run_target(run_dir, resume=True)
+    resume_data = yaml.safe_load(training_data.read_text(encoding="utf-8")) or {}
+    resume_names = normalize_class_names(resume_data.get("names"))
+    if resume_names != active_names:
+        raise RuntimeError(
+            "恢复run的dataset_training.yaml类别与当前严格验证结果不一致: "
+            f"run={resume_names}, current={active_names}"
+        )
+    model = yolo_class(str(last_weights))
+    if getattr(model, "task", None) != "segment":
+        raise RuntimeError(
+            f"恢复权重必须是segment模型，实际为: {getattr(model, 'task', None)}"
+        )
+    model_names = normalize_class_names(getattr(model, "names", None))
+    if model_names != active_names:
+        raise RuntimeError(
+            f"恢复权重类别与当前严格验证结果不一致: model={model_names}, current={active_names}"
+        )
+
+    checkpoint = getattr(model, "ckpt", None)
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("恢复权重缺少有效Ultralytics checkpoint，拒绝启动训练")
+    epoch = checkpoint.get("epoch")
+    if type(epoch) is not int or epoch < 0:
+        raise RuntimeError(
+            f"恢复检查点epoch必须是未完成训练的非负整数，实际为: {epoch!r}；"
+            "已完成并strip的权重不能resume"
+        )
+    if checkpoint.get("optimizer") is None:
+        raise RuntimeError("恢复检查点不含optimizer训练状态；已完成或strip的权重不能resume")
+    train_args = checkpoint.get("train_args")
+    if not isinstance(train_args, dict):
+        raise RuntimeError("恢复检查点缺少有效train_args，拒绝启动训练")
+    expected_paths = {
+        "project": run_dir.parent,
+        "data": training_data,
+    }
+    for field, expected in expected_paths.items():
+        raw_value = train_args.get(field)
+        if not isinstance(raw_value, (str, Path)) or not str(raw_value).strip():
+            raise RuntimeError(f"恢复检查点train_args.{field}缺失，拒绝启动训练")
+        actual = Path(raw_value).expanduser().resolve()
+        if actual != expected.resolve():
+            raise RuntimeError(
+                f"恢复检查点train_args.{field}来源不符: {actual} != {expected.resolve()}"
+            )
+    checkpoint_name = train_args.get("name")
+    if not isinstance(checkpoint_name, str) or not checkpoint_name.strip():
+        raise RuntimeError("恢复检查点train_args.name缺失，拒绝启动训练")
+    if checkpoint_name != run_dir.name:
+        raise RuntimeError(
+            f"恢复检查点train_args.name来源不符: {checkpoint_name!r} != {run_dir.name!r}"
+        )
+    print(f"[恢复] 固定加载同一run检查点: {last_weights}；--model不参与恢复。")
+    return model.train(resume=True)
 
 
 def parse_args():
@@ -96,6 +196,7 @@ def parse_args():
     p.add_argument("--patience", type=int, default=30)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--cache", choices=("false", "ram", "disk"), default="false")
+    p.add_argument("--resume", action="store_true", help="仅从同一project/name/weights/last.pt恢复中断训练")
     p.add_argument("--validate-only", action="store_true")
     p.add_argument("--report", type=Path, default=None, help="数据安全检查JSON；默认写入数据集project_reports")
     p.add_argument("--allow-same-split-dir", action="store_true", help="仅烟雾测试：允许train和val指向同一目录")
@@ -553,9 +654,24 @@ def main():
         print("数据验证通过。")
         return 0
 
+    project = args.project.expanduser().resolve()
+    run_dir = (project / args.name).resolve()
+    try:
+        validate_run_target(run_dir, resume=args.resume)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
     from ultralytics import YOLO
 
-    project = args.project.expanduser().resolve()
+    if args.resume:
+        if args.init_mode != "baseline":
+            raise SystemExit("--resume不能与--init-mode xcx-transfer同时使用")
+        try:
+            resume_training(YOLO, run_dir, active_names)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        return 0
+
     transfer_report = None
     if args.init_mode == "baseline":
         model_path = args.model.expanduser().resolve()
@@ -566,9 +682,16 @@ def main():
             raise SystemExit(f"baseline权重必须是segment模型，实际为: {getattr(model, 'task', None)}")
     else:
         model, transfer_report = build_xcx_transfer_model(args)
+
+    try:
+        claim_new_run_directory(run_dir)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if transfer_report is not None:
         transfer_path = (
             args.transfer_report.expanduser().resolve()
-            if args.transfer_report else project / args.name / "transfer_report.json"
+            if args.transfer_report else run_dir / "transfer_report.json"
         )
         transfer_path.parent.mkdir(parents=True, exist_ok=True)
         transfer_path.write_text(json.dumps(transfer_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -576,7 +699,7 @@ def main():
 
     cache = False if args.cache == "false" else args.cache
     training_data_path = write_training_dataset_yaml(
-        data_path, data, active_names, project / args.name
+        data_path, data, active_names, run_dir
     )
     print(
         f"阶段训练类别({len(active_names)}): "
@@ -587,6 +710,7 @@ def main():
         data=str(training_data_path), epochs=args.epochs, imgsz=args.imgsz, batch=args.batch,
         device=args.device, workers=args.workers, amp=True, cache=cache,
         project=str(project), name=args.name, seed=args.seed, deterministic=True,
+        # Safe because this invocation atomically claimed an absent run directory above.
         patience=args.patience, task="segment", exist_ok=True, plots=True,
     )
     return 0

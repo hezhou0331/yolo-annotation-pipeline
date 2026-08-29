@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,10 +24,13 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
-from atec_pipeline.path_compat import infer_project_root, resolve_compatible_path
+from atec_pipeline.path_compat import infer_project_root, portable_path, resolve_compatible_path
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 ACCEPTED_STATUSES = {"accepted"}
+REPORT_TRAIN_SUFFIX = "_train_report.json"
+REPORT_VAL_SUFFIX = "_val_report.json"
+STAGING_SPLIT_PARENTS = ("images", "labels", "quality_reports", "rendered_masks", "visualizations")
 
 
 @dataclass
@@ -38,6 +42,7 @@ class ReportRecord:
     source_video_id: str | None
     output_ids: list[str]
     class_names: set[str] = field(default_factory=set)
+    stage_paths: tuple[Path, ...] = ()
 
 
 @dataclass
@@ -75,6 +80,14 @@ class FileMove:
     image_dst: Path
     label_src: Path
     label_dst: Path
+
+
+@dataclass(frozen=True)
+class FileBackup:
+    content: bytes
+    mode: int
+    atime_ns: int
+    mtime_ns: int
 
 
 def _load_dataset(dataset: Path) -> tuple[Path, dict[str, Any]]:
@@ -118,12 +131,23 @@ def _read_report(path: Path) -> ReportRecord | None:
     for instance in data.get("instances") or []:
         if isinstance(instance, dict) and str(instance.get("class_name", "")).strip():
             class_names.add(str(instance["class_name"]).strip())
+    project_root = infer_project_root(path, repository_root=WORKSPACE)
     scene = resolve_compatible_path(
         str(data["scene"]),
         base=path.parent,
         repository_root=WORKSPACE,
-        project_root=infer_project_root(path, repository_root=WORKSPACE),
+        project_root=project_root,
     )
+    stage_paths: set[Path] = set()
+    for instance in data.get("instances") or []:
+        if not isinstance(instance, dict) or not str(instance.get("stage") or "").strip():
+            continue
+        stage_paths.add(resolve_compatible_path(
+            str(instance["stage"]),
+            base=path.parent,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        ))
     return ReportRecord(
         path=path,
         scene=str(scene),
@@ -132,6 +156,7 @@ def _read_report(path: Path) -> ReportRecord | None:
         source_video_id=str(data["source_video_id"]) if data.get("source_video_id") else None,
         output_ids=sorted(set(output_ids)),
         class_names=class_names,
+        stage_paths=tuple(sorted(stage_paths)),
     )
 
 
@@ -206,6 +231,111 @@ def _selected_groups(groups: list[SceneGroup], scenes: list[str], videos: list[s
     return selected
 
 
+def _project_root_for_scene(scene: Path) -> Path | None:
+    for ancestor in scene.parents:
+        if ancestor.name == "data":
+            return ancestor.parent
+    return None
+
+
+def _validated_manifest_pair(scene: Path) -> tuple[Path, Path, Path]:
+    """Return the selected scene's project root and exact train/val manifests."""
+    project_root = _project_root_for_scene(scene)
+    if project_root is None:
+        raise ValueError(f"无法从选中场次解析project_root，拒绝切分: {scene}")
+
+    old_manifest = project_root / "manifests" / f"{scene.name}_train.yaml"
+    new_manifest = project_root / "manifests" / f"{scene.name}_val.yaml"
+    if old_manifest.is_symlink() or not old_manifest.is_file():
+        raise ValueError(f"选中场次train Manifest不存在或不是普通文件: {old_manifest}")
+    if new_manifest.exists() or new_manifest.is_symlink():
+        raise ValueError(f"val Manifest目标已存在，拒绝覆盖: {new_manifest}")
+
+    try:
+        manifest = yaml.safe_load(old_manifest.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"train Manifest无法读取或不是有效YAML: {old_manifest}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"train Manifest必须是YAML对象: {old_manifest}")
+    project = manifest.get("project")
+    if not isinstance(project, dict):
+        raise ValueError(f"train Manifest project必须是对象: {old_manifest}")
+    if project.get("split") != "train":
+        raise ValueError(f"train Manifest project.split必须严格为train: {old_manifest}")
+    scene_value = project.get("scene")
+    if not isinstance(scene_value, str) or not scene_value.strip():
+        raise ValueError(f"train Manifest project.scene缺失或无效: {old_manifest}")
+    try:
+        manifest_scene = resolve_compatible_path(
+            scene_value,
+            base=old_manifest.parent,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError(f"train Manifest project.scene无法解析: {old_manifest}: {exc}") from exc
+    if manifest_scene != scene:
+        raise ValueError(
+            f"train Manifest project.scene与选中场次不一致: {old_manifest}; "
+            f"manifest={manifest_scene}, selected={scene}"
+        )
+    return project_root, old_manifest, new_manifest
+
+
+def _val_report_path(report: Path) -> Path:
+    if not report.name.endswith(REPORT_TRAIN_SUFFIX):
+        raise ValueError(f"train导出报告文件名不规范，拒绝留下split残留: {report}")
+    prefix = report.name[:-len(REPORT_TRAIN_SUFFIX)]
+    return report.with_name(f"{prefix}{REPORT_VAL_SUFFIX}")
+
+
+def _valid_review_marker(marker: Path, scene: Path, report: Path, project_root: Path) -> bool:
+    """Return whether a marker is bound to the exact pre-split report version."""
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        if data.get("scene") != scene.name or data.get("class_name") != scene.parent.name:
+            return False
+        recorded_report = resolve_compatible_path(
+            str(data["export_report"]),
+            base=marker.parent,
+            repository_root=WORKSPACE,
+            project_root=project_root,
+        )
+        return (
+            recorded_report == report.resolve()
+            and int(data["export_report_mtime_ns"]) == report.stat().st_mtime_ns
+        )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _formal_train_files(image_dir: Path, label_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
+    if not image_dir.is_dir() or not label_dir.is_dir():
+        raise ValueError(f"正式train图片/标签目录不存在: {image_dir} / {label_dir}")
+    images: dict[str, Path] = {}
+    duplicate_images: list[str] = []
+    for path in sorted(image_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        if path.stem in images:
+            duplicate_images.append(path.stem)
+        else:
+            images[path.stem] = path
+    if duplicate_images:
+        raise ValueError(f"正式train存在同stem多图片: {sorted(set(duplicate_images))[:10]}")
+    labels = {path.stem: path for path in sorted(label_dir.glob("*.txt")) if path.is_file()}
+    missing_labels = sorted(set(images) - set(labels))
+    orphan_labels = sorted(set(labels) - set(images))
+    if missing_labels or orphan_labels:
+        raise ValueError(
+            "正式train图片/标签不成对: "
+            f"缺标签={missing_labels[:10]}，孤立标签={orphan_labels[:10]}"
+        )
+    return images, labels
+
+
 def build_plan(dataset: Path | str, scenes: list[str], videos: list[str]) -> dict[str, Any]:
     dataset_path = Path(dataset)
     root, data = _load_dataset(dataset_path)
@@ -215,6 +345,37 @@ def build_plan(dataset: Path | str, scenes: list[str], videos: list[str]) -> dic
     train_labels = root / "labels" / Path(str(data.get("train", "images/train"))).name
     val_images = root / str(data.get("val", "images/val"))
     val_labels = root / "labels" / Path(str(data.get("val", "images/val"))).name
+    all_records = [record for group in groups for record in group.records]
+    output_owners: dict[str, tuple[Path, Path]] = {}
+    for record in all_records:
+        owner = (record.path.resolve(), Path(record.scene).expanduser().resolve())
+        for output_id in record.output_ids:
+            previous = output_owners.get(output_id)
+            if previous is not None and previous != owner:
+                raise ValueError(
+                    f"accepted output_id被不同report/scene重复认领: {output_id}; "
+                    f"{previous[0]} ({previous[1]}) vs {owner[0]} ({owner[1]})"
+                )
+            output_owners[output_id] = owner
+    train_image_files, train_label_files = _formal_train_files(train_images, train_labels)
+
+    selected_records_by_scene: dict[Path, list[ReportRecord]] = {}
+    for group in selected:
+        for record in group.records:
+            scene = Path(record.scene).expanduser().resolve()
+            selected_records_by_scene.setdefault(scene, []).append(record)
+    for scene, records in selected_records_by_scene.items():
+        expected = {output_id for record in records for output_id in record.output_ids}
+        prefix = f"{scene.name}_"
+        actual_images = {stem for stem in train_image_files if stem.startswith(prefix)}
+        actual_labels = {stem for stem in train_label_files if stem.startswith(prefix)}
+        if actual_images != expected or actual_labels != expected:
+            extra = sorted((actual_images | actual_labels) - expected)
+            missing = sorted(expected - (actual_images & actual_labels))
+            raise ValueError(
+                f"场次正式train输出与report accepted集合不一致: {scene.name}; "
+                f"extra={extra[:10]}，missing={missing[:10]}"
+            )
     moves: list[tuple[Path, Path, Path, Path]] = []
     missing: list[str] = []
     report_paths: list[Path] = []
@@ -242,27 +403,74 @@ def build_plan(dataset: Path | str, scenes: list[str], videos: list[str]) -> dic
     conflicts = [str(dst) for _, dst, _, _ in moves if dst.exists()]
     if conflicts:
         raise ValueError(f"val目标已有文件，拒绝覆盖: {conflicts[:10]}")
-    manifest_updates: list[tuple[Path, Path]] = []
+    manifest_updates: set[tuple[Path, Path]] = set()
+    manifest_by_scene: dict[Path, tuple[Path, Path]] = {}
+    project_by_scene: dict[Path, Path] = {}
     session_metadata: list[Path] = []
+    for scene in sorted(selected_records_by_scene):
+        metadata = scene / "atec_capture_session.json"
+        if metadata.is_file():
+            session_metadata.append(metadata)
+        project_root, old_manifest, new_manifest = _validated_manifest_pair(scene)
+        project_by_scene[scene] = project_root
+        manifest_updates.add((old_manifest, new_manifest))
+        manifest_by_scene[scene] = (old_manifest, new_manifest)
+
+    report_updates: list[tuple[Path, Path, Path, Path]] = []
+    report_sidecar_updates: set[tuple[Path, Path]] = set()
+    segments_updates: set[tuple[Path, Path, Path]] = set()
+    review_marker_updates: set[tuple[Path, Path, Path, Path, Path]] = set()
+    staging_updates: set[tuple[Path, Path]] = set()
+    staging_metadata: set[Path] = set()
+    staging_root = (root / "_staging").resolve()
     for group in selected:
         for record in group.records:
             scene = Path(record.scene).expanduser().resolve()
-            metadata = scene / "atec_capture_session.json"
-            if metadata.is_file():
-                session_metadata.append(metadata)
-            project_root = None
-            for ancestor in scene.parents:
-                if ancestor.name == "data":
-                    project_root = ancestor.parent
-                    break
-            if project_root is None:
-                continue
-            old_manifest = project_root / "manifests" / f"{scene.name}_train.yaml"
-            new_manifest = project_root / "manifests" / f"{scene.name}_val.yaml"
-            if old_manifest.is_file():
-                if new_manifest.exists():
-                    raise ValueError(f"val Manifest目标已存在，拒绝覆盖: {new_manifest}")
-                manifest_updates.append((old_manifest, new_manifest))
+            project_root = project_by_scene[scene]
+            new_manifest = manifest_by_scene[scene][1]
+            new_report = _val_report_path(record.path)
+            if new_report.exists():
+                raise ValueError(f"val导出报告目标已存在，拒绝覆盖: {new_report}")
+            report_updates.append((record.path, new_report, new_manifest, project_root))
+
+            old_sidecar = record.path.with_suffix(".csv")
+            new_sidecar = new_report.with_suffix(".csv")
+            if new_sidecar.exists():
+                raise ValueError(f"val导出报告CSV目标已存在，拒绝覆盖: {new_sidecar}")
+            if old_sidecar.is_file():
+                report_sidecar_updates.add((old_sidecar, new_sidecar))
+
+            segments = scene / "project_reports" / "segments.json"
+            if segments.is_file():
+                segments_updates.add((segments, new_manifest, project_root))
+
+            marker = scene / "project_reports" / "manual_review_complete.json"
+            if marker.is_file() and _valid_review_marker(marker, scene, record.path, project_root):
+                review_marker_updates.add((
+                    marker, record.path, new_report, scene, project_root,
+                ))
+
+            for stage in record.stage_paths:
+                resolved_stage = stage.resolve()
+                try:
+                    resolved_stage.relative_to(staging_root)
+                except ValueError as exc:
+                    raise ValueError(f"导出报告stage不在数据集_staging内，拒绝移动: {stage}") from exc
+                if not resolved_stage.exists():
+                    continue
+                for parent_name in STAGING_SPLIT_PARENTS:
+                    source = resolved_stage / parent_name / "train"
+                    destination = resolved_stage / parent_name / "val"
+                    if destination.exists():
+                        raise ValueError(f"staging val目标已存在，拒绝覆盖: {destination}")
+                    if source.is_dir():
+                        staging_updates.add((source, destination))
+                        if parent_name == "quality_reports":
+                            staging_metadata.update(
+                                path for path in source.rglob("quality_report.json") if path.is_file()
+                            )
+                    elif source.exists():
+                        raise ValueError(f"staging split来源不是目录: {source}")
     return {
         "dataset": root,
         "dataset_yaml": (dataset_path if dataset_path.is_file() else root / "dataset.yaml").resolve(),
@@ -272,8 +480,14 @@ def build_plan(dataset: Path | str, scenes: list[str], videos: list[str]) -> dic
         "selected_keys": selected_keys,
         "val_images": val_images,
         "val_labels": val_labels,
-        "manifest_updates": sorted(set(manifest_updates)),
+        "manifest_updates": sorted(manifest_updates),
         "session_metadata": sorted(set(session_metadata)),
+        "report_updates": sorted(report_updates, key=lambda item: str(item[0])),
+        "report_sidecar_updates": sorted(report_sidecar_updates),
+        "segments_updates": sorted(segments_updates),
+        "review_marker_updates": sorted(review_marker_updates),
+        "staging_updates": sorted(staging_updates),
+        "staging_metadata": sorted(staging_metadata),
     }
 
 
@@ -333,6 +547,9 @@ def build_auto_plan(dataset: Path | str, target_ratio: float = 0.20) -> dict[str
                 "val_images": _load_dataset(Path(dataset))[0] / "images/val",
                 "val_labels": _load_dataset(Path(dataset))[0] / "labels/val",
                 "manifest_updates": [], "session_metadata": [],
+                "report_updates": [], "report_sidecar_updates": [],
+                "segments_updates": [], "review_marker_updates": [],
+                "staging_updates": [], "staging_metadata": [],
                 "auto_summary": {"target_ratio": target_ratio, "insufficient_classes": insufficient},
             }
         details = "、".join(insufficient or classes or ["没有有效类别"])
@@ -375,22 +592,74 @@ def build_auto_plan(dataset: Path | str, target_ratio: float = 0.20) -> dict[str
 
 def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     os.close(fd)
     temp_path = Path(temp_name)
     try:
         temp_path.write_text(text, encoding="utf-8")
+        if existing_mode is not None:
+            os.chmod(temp_path, existing_mode)
         temp_path.replace(path)
     finally:
         temp_path.unlink(missing_ok=True)
 
 
+def _backup_file(path: Path) -> FileBackup:
+    stat = path.stat()
+    return FileBackup(
+        content=path.read_bytes(),
+        mode=stat.st_mode,
+        atime_ns=stat.st_atime_ns,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+
+def _restore_file(path: Path, backup: FileBackup) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(backup.content)
+    os.chmod(path, backup.mode & 0o7777)
+    os.utime(path, ns=(backup.atime_ns, backup.mtime_ns))
+
+
+def _mkdir_tracked(path: Path, created: list[Path]) -> None:
+    if path.exists():
+        if not path.is_dir():
+            raise RuntimeError(f"目标父路径不是目录: {path}")
+        return
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=False)
+    created.extend(reversed(missing))
+
+
+def _move_tracked(source: Path, destination: Path, moved: list[tuple[Path, Path]], created: list[Path]) -> None:
+    _mkdir_tracked(destination.parent, created)
+    # Record the intent before entering shutil.move: an asynchronous
+    # interruption may arrive after the underlying rename succeeds but before
+    # this function regains control.  Rollback resolves the resulting state.
+    moved.append((source, destination))
+    shutil.move(str(source), str(destination))
+
+
 def apply_plan(plan: dict[str, Any]) -> None:
     moves: list[tuple[Path, Path, Path, Path]] = plan["files"]
-    reports: list[Path] = plan["reports"]
     dataset_yaml: Path = plan["dataset_yaml"]
     manifest_updates: list[tuple[Path, Path]] = plan.get("manifest_updates", [])
     session_metadata: list[Path] = plan.get("session_metadata", [])
+    report_updates: list[tuple[Path, Path, Path, Path]] = plan.get("report_updates", [])
+    report_sidecar_updates: list[tuple[Path, Path]] = plan.get("report_sidecar_updates", [])
+    segments_updates: list[tuple[Path, Path, Path]] = plan.get("segments_updates", [])
+    review_marker_updates: list[tuple[Path, Path, Path, Path, Path]] = plan.get(
+        "review_marker_updates", []
+    )
+    staging_updates: list[tuple[Path, Path]] = plan.get("staging_updates", [])
+    staging_metadata: list[Path] = plan.get("staging_metadata", [])
     # A second preflight protects against a destination appearing after planning.
     for image_src, image_dst, label_src, label_dst in moves:
         if not image_src.is_file() or not label_src.is_file():
@@ -402,25 +671,77 @@ def apply_plan(plan: dict[str, Any]) -> None:
             raise RuntimeError(f"Manifest在执行前消失: {old_manifest}")
         if new_manifest.exists():
             raise RuntimeError(f"拒绝覆盖val Manifest: {new_manifest}")
-    mutable_files = sorted(set(reports + session_metadata + [dataset_yaml] + [old for old, _ in manifest_updates]))
-    backups = {path: path.read_bytes() for path in mutable_files}
-    for directory in (plan["val_images"], plan["val_labels"]):
-        directory.mkdir(parents=True, exist_ok=True)
-    moved: list[tuple[Path, Path, Path, Path]] = []
-    renamed_manifests: list[tuple[Path, Path]] = []
+    for old_report, new_report, _new_manifest, _project_root in report_updates:
+        if not old_report.is_file():
+            raise RuntimeError(f"导出报告在执行前消失: {old_report}")
+        if new_report.exists():
+            raise RuntimeError(f"拒绝覆盖val导出报告: {new_report}")
+    for source, destination in [*report_sidecar_updates, *staging_updates]:
+        if not source.exists():
+            raise RuntimeError(f"事务来源在执行前消失: {source}")
+        if destination.exists():
+            raise RuntimeError(f"拒绝覆盖事务目标: {destination}")
+    for marker, old_report, _new_report, scene, project_root in review_marker_updates:
+        if not _valid_review_marker(marker, scene, old_report, project_root):
+            raise RuntimeError(f"人工Review标记在计划后发生变化，拒绝伪造完成状态: {marker}")
+
+    mutable_files = sorted(set(
+        [dataset_yaml]
+        + session_metadata
+        + [old for old, _ in manifest_updates]
+        + [old for old, _new, _manifest, _root in report_updates]
+        + [path for path, _manifest, _root in segments_updates]
+        + [marker for marker, _old, _new, _scene, _root in review_marker_updates]
+        + staging_metadata
+    ))
+    missing_mutable = [path for path in mutable_files if not path.is_file()]
+    if missing_mutable:
+        raise RuntimeError(f"事务元数据在执行前消失: {missing_mutable[:10]}")
+    backups = {path: _backup_file(path) for path in mutable_files}
+    moved_paths: list[tuple[Path, Path]] = []
+    created_directories: list[Path] = []
     try:
+        for directory in (plan["val_images"], plan["val_labels"]):
+            _mkdir_tracked(directory, created_directories)
         for image_src, image_dst, label_src, label_dst in moves:
-            shutil.move(str(image_src), str(image_dst))
-            shutil.move(str(label_src), str(label_dst))
-            moved.append((image_src, image_dst, label_src, label_dst))
-        for report_path in reports:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
+            _move_tracked(image_src, image_dst, moved_paths, created_directories)
+            _move_tracked(label_src, label_dst, moved_paths, created_directories)
+        for old_report, new_report, new_manifest, project_root in report_updates:
+            data = json.loads(old_report.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"导出报告必须是JSON对象: {old_report}")
             data["split"] = "val"
-            _atomic_write_text(report_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            data["manifest"] = portable_path(
+                new_manifest, relative_to=old_report.parent,
+                repository_root=WORKSPACE, project_root=project_root,
+            )
+            _atomic_write_text(old_report, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            _move_tracked(old_report, new_report, moved_paths, created_directories)
+        for old_sidecar, new_sidecar in report_sidecar_updates:
+            _move_tracked(old_sidecar, new_sidecar, moved_paths, created_directories)
         for metadata_path in session_metadata:
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"采集会话元数据必须是JSON对象: {metadata_path}")
             data["split"] = "val"
             _atomic_write_text(metadata_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        for segments_path, new_manifest, project_root in segments_updates:
+            data = json.loads(segments_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"segments.json必须是JSON对象: {segments_path}")
+            data["manifest"] = portable_path(
+                new_manifest, relative_to=segments_path.parent,
+                repository_root=WORKSPACE, project_root=project_root,
+            )
+            _atomic_write_text(segments_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        for metadata_path in staging_metadata:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("split") != "train":
+                raise ValueError(f"staging质量报告split不是train: {metadata_path}")
+            data["split"] = "val"
+            _atomic_write_text(metadata_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        for source, destination in staging_updates:
+            _move_tracked(source, destination, moved_paths, created_directories)
         for old_manifest, new_manifest in manifest_updates:
             data = yaml.safe_load(old_manifest.read_text(encoding="utf-8")) or {}
             project = data.setdefault("project", {})
@@ -428,25 +749,54 @@ def apply_plan(plan: dict[str, Any]) -> None:
                 raise ValueError(f"Manifest project字段无效: {old_manifest}")
             project["split"] = "val"
             _atomic_write_text(old_manifest, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
-            old_manifest.replace(new_manifest)
-            renamed_manifests.append((old_manifest, new_manifest))
-        root, data = _load_dataset(dataset_yaml)
+            _move_tracked(old_manifest, new_manifest, moved_paths, created_directories)
+        for marker, _old_report, new_report, _scene, project_root in review_marker_updates:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"人工Review标记必须是JSON对象: {marker}")
+            data["export_report"] = portable_path(
+                new_report, relative_to=marker.parent,
+                repository_root=WORKSPACE, project_root=project_root,
+            )
+            data["export_report_mtime_ns"] = new_report.stat().st_mtime_ns
+            _atomic_write_text(marker, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        _root, data = _load_dataset(dataset_yaml)
         data["val"] = "images/val"
         if data.get("test") == data["val"]:
             data.pop("test", None)
         _atomic_write_text(dataset_yaml, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
-    except Exception:
-        for old_manifest, new_manifest in reversed(renamed_manifests):
-            if new_manifest.exists() and not old_manifest.exists():
-                new_manifest.replace(old_manifest)
-        for path, content in backups.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-        for image_src, image_dst, label_src, label_dst in reversed(moved):
-            if image_dst.exists() and not image_src.exists():
-                shutil.move(str(image_dst), str(image_src))
-            if label_dst.exists() and not label_src.exists():
-                shutil.move(str(label_dst), str(label_src))
+    except BaseException as error:
+        rollback_errors: list[str] = []
+        for source, destination in reversed(moved_paths):
+            try:
+                source_exists = source.exists() or source.is_symlink()
+                destination_exists = destination.exists() or destination.is_symlink()
+                if source_exists and not destination_exists:
+                    # The interruption happened before the move took effect.
+                    continue
+                if not source_exists and destination_exists:
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(destination), str(source))
+                    continue
+                raise RuntimeError(
+                    "移动intent处于不一致状态，无法安全回滚: "
+                    f"source_exists={source_exists}, destination_exists={destination_exists}; "
+                    f"{source} -> {destination}"
+                )
+            except BaseException as rollback_error:  # pragma: no cover - catastrophic filesystem failure
+                rollback_errors.append(str(rollback_error))
+        for path, backup in backups.items():
+            try:
+                _restore_file(path, backup)
+            except BaseException as rollback_error:  # pragma: no cover - catastrophic filesystem failure
+                rollback_errors.append(f"恢复{path}失败: {rollback_error}")
+        for directory in reversed(created_directories):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        if rollback_errors:
+            raise RuntimeError(f"切分失败且回滚不完整: {rollback_errors[:5]}") from error
         raise
 
 

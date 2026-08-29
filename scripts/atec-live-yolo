@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${ATEC_YOLO_PY:-${ATEC_YOLO_PYTHON:-$HOME/miniforge3/envs/yolo11/bin/python}}"
-MODEL="${ATEC_YOLO_MODEL:-$ROOT/runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt}"
+MODEL="${ATEC_YOLO_MODEL:-$ROOT/runs/segment/atec_9class_reviewed_20260829/weights/best.pt}"
 SOURCE="${ATEC_YOLO_SOURCE:-0}"
 CONF="${ATEC_YOLO_CONF:-0.25}"
 IMGSZ="${ATEC_YOLO_IMGSZ:-640}"

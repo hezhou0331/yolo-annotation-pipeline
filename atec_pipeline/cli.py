@@ -245,6 +245,8 @@ def train(args: argparse.Namespace) -> int:
            "--project", args.project, "--name", args.name, "--patience", str(args.patience),
            "--seed", str(args.seed), "--cache", args.cache,
            "--require-project-reports", "--require-source-ids"]
+    if args.resume:
+        cmd.append("--resume")
     if args.reviewed_negatives:
         cmd.extend(["--reviewed-negatives", args.reviewed_negatives])
     return run(cmd)
@@ -273,10 +275,14 @@ def smoke_test(_: argparse.Namespace) -> int:
         [runtimes["foundationpose"], ROOT / "tests/test_prepare_project_single_class.py"],
         [runtimes["yolo11"], ROOT / "tests/test_sam2_recovery.py"],
         [runtimes["yolo11"], ROOT / "tests/test_annotation_pipeline.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_split_dataset_by_scene.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_training_class_subset.py"],
+        [runtimes["yolo11"], ROOT / "tests/test_validate_yolo11_seg_release.py"],
         [runtimes["yolo11"], ROOT / "tests/test_path_portability.py"],
         [runtimes["yolo11"], ROOT / "tests/test_runtime.py"],
         [runtimes["foundationpose"], ROOT / "tests/test_dataset_safety.py"],
         [runtimes["yolo11"], ROOT / "tests/test_xcx_integration.py"],
+        [cli_python, ROOT / "tests/test_live_yolo_launcher.py"],
         [cli_python, ROOT / "tests/test_git_safety.py"],
         [ROOT / "tests/test_public_portability.sh"],
         [ROOT / "tests/test_download_atec_data.sh"],
@@ -410,7 +416,9 @@ def parser() -> argparse.ArgumentParser:
     x.add_argument("--workers", type=int, default=4); x.add_argument("--project", type=Path, default=ROOT / "runs/segment")
     x.add_argument("--name", default="atec_yolo11s_seg"); x.add_argument("--patience", type=int, default=30)
     x.add_argument("--seed", type=int, default=0); x.add_argument("--reviewed-negatives", type=Path)
-    x.add_argument("--cache", choices=["false", "ram", "disk"], default="false"); x.set_defaults(func=train)
+    x.add_argument("--cache", choices=["false", "ram", "disk"], default="false")
+    x.add_argument("--resume", action="store_true", help="仅从同一project/name/weights/last.pt恢复")
+    x.set_defaults(func=train)
 
     x = sub.add_parser("evaluate", help="比较真实val、纯干扰误检和端到端FPS")
     x.add_argument("data", type=Path); x.add_argument("--model", action="append", required=True, help="NAME=/path/to/best.pt")

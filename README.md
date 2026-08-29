@@ -2,9 +2,9 @@
 
 使用 Orbbec Gemini 336L 采集 RGB-D，以人工关键帧 Mask + SAM2 传播生成实例分割标签，通过质量门控导出 YOLO11-seg，并用薄桌面 App 管理采集、标注、验证、训练和实时识别。
 
-## 当前里程碑（2026-08-27）
+## 当前里程碑（2026-08-29）
 
-当前**标注配置为 9 类**。已有正式数据快照仍覆盖前 7 类，当前可直接用于实时测试的训练权重仍是 5 类阶段模型：
+当前**标注、数据集和默认模型均为 9 类**：
 
 ```text
 0 can
@@ -18,26 +18,26 @@
 8 sand_bottle
 ```
 
-`purple_paper_bag`（紫色袋子）和 `sand_bottle`（沙瓶）是比赛干扰项，但在本项目中作为显式实例类别标注。它们目前还没有进入已发布的 train/val 数据和模型；各自拥有独立有效 train/val 场次后，才能称为完整 9 类模型。历史 7 类 Manifest、dataset 和模型仍作为当前 9 类配置的严格连续前缀兼容。
+`purple_paper_bag`（紫色袋子）和 `sand_bottle`（沙瓶）是比赛干扰项，但在本项目中作为显式实例类别标注。它们已进入正式 train/val，九个类别在两个 split 中均有来自独立视频的有效标签。历史 4/5/7 类权重和 run 继续保留，用于回滚和对照。
 
-当前导出数据统计（只统计正式 `train/val`，不包含 `_staging`）：
+当前 54 个场次的正式导出数据统计（只统计 `accepted` 的 `train/val`，不包含 `_staging`）：
 
-| split | 图片/标签 | can | watermelon_rind | meal_box | red_paper_bag | blue_bin | green_bin | red_bin |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| train | 3,431 | 349 | 764 | 403 | 553 | 526 | 461 | 375 |
-| val | 532 | 82 | 65 | 58 | 73 | 103 | 87 | 64 |
-| 合计 | **3,963** | **431** | **829** | **461** | **626** | **629** | **548** | **439** |
+| split | 图片/标签 | can | watermelon_rind | meal_box | red_paper_bag | blue_bin | green_bin | red_bin | purple_paper_bag | sand_bottle |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| train | 5,010 | 349 | 764 | 403 | 553 | 526 | 461 | 637 | 721 | 596 |
+| val | 873 | 82 | 65 | 58 | 73 | 103 | 87 | 64 | 189 | 152 |
+| 合计 | **5,883** | **431** | **829** | **461** | **626** | **629** | **548** | **701** | **910** | **748** |
 
 每张正式图片当前对应一个有效实例标签；`review` / `rejected` 帧不进入正式训练目录。验证集按完整场次/采集视频划分，不随机拆分相邻帧；当前没有独立 `test` 集。原始 RGB-D、关键 Mask、传播结果和 Review 报告也会作为可选数据快照发布。
 
-当前可选训练权重：
+当前 App 和实时启动器默认使用的九类权重：
 
 ```text
-runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt
-类别：can、watermelon_rind、meal_box、red_paper_bag、blue_bin
+runs/segment/atec_9class_reviewed_20260829/weights/best.pt
+类别：can、watermelon_rind、meal_box、red_paper_bag、blue_bin、green_bin、red_bin、purple_paper_bag、sand_bottle
 ```
 
-该权重是五类阶段模型，只能识别上述五类；它不包含 `green_bin`、`red_bin`、`purple_paper_bag` 或 `sand_bottle`。现有七类数据可重新训练七类阶段模型；只有新增两类也具备独立 train/val 后，才训练完整九类模型。权重不进入 Git 历史，通过 [2026-08-26 模型 Release](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260826) 作为可选附件提供。
+该模型从官方 `models/yolo11s-seg.pt` 全新初始化，不加载历史阶段模型；固定参数为 `epochs=100`、`patience=30`、`imgsz=640`、`batch=4`、`workers=4`、`device=0`、`seed=0`、AMP、deterministic、`cache=false`。权重不进入 Git 历史，通过 [ATEC 9-class reviewed model 2026-08-29](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260829) 的 `atec-9class-reviewed-20260829-best.pt` 和同名 `.sha256` 附件发布。最佳 epoch 和 Mask 验证指标以 Release Notes 为准；旧 4/5/7 类权重及 run 不会被覆盖。
 
 ## 最快开始
 
@@ -202,7 +202,7 @@ Q / Esc     退出
 - train/val 没有相同的场次、`capture_session_id` 或 `source_video_id`；
 - 数据集验证通过。
 
-当前已发布数据快照包含前七类，但当前可直接下载测试的权重是五类阶段性模型：
+当前正式训练数据共有 5,883 个 accepted 图片/标签对，按完整场次分为 train 5,010 和 val 873，包含全部九类：
 
 ```text
 can
@@ -210,9 +210,13 @@ watermelon_rind
 meal_box
 red_paper_bag
 blue_bin
+green_bin
+red_bin
+purple_paper_bag
+sand_bottle
 ```
 
-它不是七类或九类完整模型；`green_bin`、`red_bin` 需要重新训练七类阶段模型，紫色袋子和沙瓶还必须先补齐独立 train/val 数据。
+九类训练从官方 YOLO11s-seg 预训练权重开始，默认实验名为 `atec_9class_reviewed_20260829`。模型权重单独通过 `model-20260829` Release 发布；本次不发布新的完整 RGB-D 数据 Release。
 
 ### 9. 实时识别
 
@@ -280,7 +284,7 @@ xcx/
 
 ## 外接摄像头启动 YOLO 实时识别
 
-最短命令（默认使用五类阶段模型、外接摄像头、`conf=0.25`）：
+最短命令（默认使用九类模型、外接摄像头、`conf=0.25`）：
 
 ```bash
 ./scripts/atec-live-yolo
@@ -291,14 +295,14 @@ xcx/
 ```bash
 "${ATEC_YOLO_PY:-$HOME/miniforge3/envs/yolo11/bin/python}" \
   tools/live_yolo11_seg.py \
-  --model runs/segment/atec_5class_reviewed_20260826_1744/weights/best.pt \
+  --model runs/segment/atec_9class_reviewed_20260829/weights/best.pt \
   --source 0 \
   --conf 0.25 \
   --imgsz 640 \
   --device 0
 ```
 
-这里的 `--source 0` 对应外接 HD Webcam `/dev/video0`。这是通用五类实例分割识别，不是黄罐专用。按 `Q`、`Esc` 或 `Ctrl+C` 退出。建议先保持 `conf=0.25`；降低到 `0.15` 会明显增加背景误检。
+这里的 `--source 0` 对应外接 HD Webcam `/dev/video0`。这是通用九类实例分割识别，不是黄罐专用。按 `Q`、`Esc` 或 `Ctrl+C` 退出。建议先保持 `conf=0.25`；降低到 `0.15` 会明显增加背景误检。
 
 ## 数据目录边界
 
