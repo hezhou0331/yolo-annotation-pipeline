@@ -37,7 +37,9 @@ runs/segment/atec_9class_reviewed_20260829/weights/best.pt
 类别：can、watermelon_rind、meal_box、red_paper_bag、blue_bin、green_bin、red_bin、purple_paper_bag、sand_bottle
 ```
 
-该模型从官方 `models/yolo11s-seg.pt` 全新初始化，不加载历史阶段模型；固定参数为 `epochs=100`、`patience=30`、`imgsz=640`、`batch=4`、`workers=4`、`device=0`、`seed=0`、AMP、deterministic、`cache=false`。权重不进入 Git 历史，通过 [ATEC 9-class reviewed model 2026-08-29](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260829) 的 `atec-9class-reviewed-20260829-best.pt` 和同名 `.sha256` 附件发布。最佳 epoch 和 Mask 验证指标以 Release Notes 为准；旧 4/5/7 类权重及 run 不会被覆盖。
+该模型从官方 `models/yolo11s-seg.pt` 全新初始化，不加载历史阶段模型；请求参数为 `epochs=100`、`patience=30`、`imgsz=640`、`batch=4`、`workers=4`、`device=0`、`seed=0`、AMP、deterministic、`cache=false`。训练因 EarlyStopping 自然结束，共完成 46 个 epoch，最佳为 epoch 16；该 epoch 的训练时 Mask 指标为 `P=0.94661`、`R=0.94623`、`mAP50=0.96001`、`mAP50-95=0.87029`，最终独立 full-val 验证为 `P=0.94597`、`R=0.94736`、`mAP50=0.96011`、`mAP50-95=0.87006`。运行库为 Ultralytics `8.4.126`、Torch `2.6.0+cu124`，发布权重 SHA-256 为 `94cb56050f121d63e8219287a4c5d0c2108e30078015a6ed624765701b9dfc0f`。
+
+权重不进入 Git 历史，通过 [ATEC 9-class reviewed model 2026-08-29](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/model-20260829) 的 `atec-9class-reviewed-20260829-best.pt` 和同名 `.sha256` 附件发布；Release Notes 同步记录完整训练与验收信息。旧 4/5/7 类权重及 run 不会被覆盖。
 
 ## 最快开始
 

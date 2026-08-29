@@ -110,11 +110,18 @@ def main() -> None:
         data_path = dataset / "dataset.yaml"
         data_path.write_text(
             yaml.safe_dump(
-                {"path": ".", "val": "images/val", "names": release.EXPECTED_CLASSES},
+                {
+                    "path": ".",
+                    "train": "images/train",
+                    "val": "images/val",
+                    "test": ["images/test-a", "images/test-b"],
+                    "names": release.EXPECTED_CLASSES,
+                },
                 sort_keys=False,
             ),
             encoding="utf-8",
         )
+        source_data_yaml = data_path.read_bytes()
         samples = release.select_val_samples(data_path)
         assert set(samples) == set(range(9))
         assert all(path.is_file() for path in samples.values())
@@ -137,9 +144,21 @@ def main() -> None:
         class FakeModel:
             task = "segment"
             names = release.EXPECTED_CLASSES
+            validated_data_path = None
 
             def val(self, **kwargs):
                 assert kwargs["split"] == "val" and kwargs["plots"] is False
+                resolved_path = Path(kwargs["data"])
+                assert resolved_path != data_path
+                assert resolved_path.is_file()
+                resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+                assert Path(resolved["path"]).is_absolute()
+                assert Path(resolved["path"]) == dataset.resolve()
+                assert resolved["train"] == "images/train"
+                assert resolved["val"] == "images/val"
+                assert resolved["test"] == ["images/test-a", "images/test-b"]
+                assert release.normalize_names(resolved["names"]) == release.EXPECTED_CLASSES
+                self.validated_data_path = resolved_path
                 return FakeMetrics()
 
             def predict(self, **kwargs):
@@ -157,6 +176,9 @@ def main() -> None:
         )
         assert metrics["mask_map50_95"] == 0.75
         assert set(metrics["per_class"]) == set(release.EXPECTED_CLASSES.values())
+        assert model.validated_data_path is not None
+        assert not model.validated_data_path.exists()
+        assert data_path.read_bytes() == source_data_yaml
         completed = release.smoke_predict(model, samples, device="cpu", imgsz=640)
         assert set(completed) == set(release.EXPECTED_CLASSES.values())
 

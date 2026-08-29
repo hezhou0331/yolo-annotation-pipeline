@@ -131,8 +131,31 @@ def validate_model_identity(model: Any) -> dict[int, str]:
 
 
 def _resolve_dataset_root(data_path: Path, config: dict[str, Any]) -> Path:
-    configured = Path(str(config.get("path", "."))).expanduser()
+    configured = Path(str(config.get("path") or ".")).expanduser()
     return configured.resolve() if configured.is_absolute() else (data_path.parent / configured).resolve()
+
+
+def write_resolved_dataset_yaml(data_path: Path, destination: Path) -> Path:
+    """Write a temporary dataset YAML whose root remains valid from any location."""
+    data_path = data_path.expanduser().resolve()
+    if not data_path.is_file():
+        raise RuntimeError(f"dataset.yaml不存在: {data_path}")
+    config = yaml.safe_load(data_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(config, dict):
+        raise RuntimeError(f"dataset.yaml顶层必须是映射: {data_path}")
+    data_names = normalize_names(config.get("names"))
+    if data_names != EXPECTED_CLASSES:
+        raise RuntimeError(f"数据集类别必须严格等于0-8九类配置: {data_names}")
+
+    resolved = dict(config)
+    resolved["path"] = str(_resolve_dataset_root(data_path, config))
+    destination = destination.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        yaml.safe_dump(resolved, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return destination
 
 
 def _images_from_spec(spec: str, *, dataset_root: Path) -> list[Path]:
@@ -220,17 +243,22 @@ def validate_metrics(
     imgsz: int,
     project: Path,
 ) -> dict[str, Any]:
-    metrics = model.val(
-        data=str(data_path),
-        split="val",
-        device=device,
-        imgsz=imgsz,
-        project=str(project),
-        name="val",
-        exist_ok=True,
-        plots=False,
-        verbose=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="atec_yolo_release_data_") as temp:
+        resolved_data_path = write_resolved_dataset_yaml(
+            data_path,
+            Path(temp) / "dataset.yaml",
+        )
+        metrics = model.val(
+            data=str(resolved_data_path),
+            split="val",
+            device=device,
+            imgsz=imgsz,
+            project=str(project),
+            name="val",
+            exist_ok=True,
+            plots=False,
+            verbose=False,
+        )
     seg = getattr(metrics, "seg", None)
     if seg is None:
         raise RuntimeError("Ultralytics验证结果没有seg指标")
