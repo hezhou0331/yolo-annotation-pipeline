@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Orbbec SDK RGB frames and stream JPEG packets over a local Unix socket."""
+"""Stream hardware-aligned Orbbec RGB-D frames over a local Unix socket."""
 from __future__ import annotations
 
 import argparse
@@ -10,12 +10,12 @@ import sys
 
 import cv2
 
-from capture_orbbec_rgbd import find_profile, profile_text, rgb_frame_to_bgr
-from orbbec_stream_protocol import send_packet
+from capture_orbbec_rgbd import depth_frame_to_mm, find_profile, profile_text, rgb_frame_to_bgr
+from orbbec_stream_protocol import RgbdPacket, send_rgbd_packet
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Orbbec SDK RGB 本地图像流")
+    parser = argparse.ArgumentParser(description="Orbbec SDK 硬件对齐RGB-D本地图像流")
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -42,7 +42,9 @@ def main() -> int:
         print("--jpeg-quality必须在50到100之间。", file=sys.stderr, flush=True)
         return 2
 
-    from pyorbbecsdk import Config, Context, OBFormat, OBSensorType, Pipeline
+    from pyorbbecsdk import (
+        Config, Context, OBAlignMode, OBFormat, OBFrameAggregateOutputMode, OBSensorType, Pipeline,
+    )
 
     context = Context()
     devices = context.query_devices()
@@ -51,8 +53,8 @@ def main() -> int:
         return 1
 
     pipeline = Pipeline()
-    profiles = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = find_profile(profiles, args.width, args.height, args.fps, OBFormat.RGB)
+    color_profiles = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+    color_profile = find_profile(color_profiles, args.width, args.height, args.fps, OBFormat.RGB)
     if color_profile is None:
         print(
             f"找不到 Orbbec RGB {args.width}x{args.height}@{args.fps} 配置。",
@@ -61,8 +63,25 @@ def main() -> int:
         )
         return 1
 
+    depth_profiles = pipeline.get_d2c_depth_profile_list(color_profile, OBAlignMode.HW_MODE)
+    depth_profile = find_profile(depth_profiles, args.width, args.height, args.fps, OBFormat.Y16)
+    if depth_profile is None:
+        print(
+            f"找不到 Orbbec 硬件D2C深度 {args.width}x{args.height}@{args.fps} 配置。",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
     config = Config()
+    config.enable_stream(depth_profile)
     config.enable_stream(color_profile)
+    config.set_align_mode(OBAlignMode.HW_MODE)
+    config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
+    try:
+        pipeline.enable_frame_sync()
+    except Exception as exc:
+        print(f"提示：硬件帧同步未启用：{exc}", file=sys.stderr, flush=True)
     connection: socket.socket | None = None
     started = False
     try:
@@ -71,14 +90,19 @@ def main() -> int:
         valid_frames = 0
         while valid_frames < args.warmup:
             frames = pipeline.wait_for_frames(1000)
-            if frames and frames.get_color_frame():
+            if frames and frames.get_color_frame() and frames.get_depth_frame():
                 valid_frames += 1
+
+        camera_param = pipeline.get_camera_param()
+        intr = camera_param.rgb_intrinsic
+        intrinsics = (float(intr.fx), float(intr.fy), float(intr.cx), float(intr.cy))
 
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.connect(str(args.socket))
         print(
-            f"Orbbec RGB流已连接：{profile_text(color_profile)}，预热 {valid_frames} 帧，"
-            f"JPEG质量 {args.jpeg_quality}",
+            f"Orbbec RGB-D流已连接：RGB {profile_text(color_profile)}，"
+            f"Depth {profile_text(depth_profile)}，硬件D2C，预热 {valid_frames} 帧，"
+            f"RGB JPEG质量 {args.jpeg_quality}",
             flush=True,
         )
 
@@ -88,9 +112,15 @@ def main() -> int:
             if not frames:
                 continue
             color_frame = frames.get_color_frame()
-            if not color_frame:
+            depth_frame = frames.get_depth_frame()
+            if not color_frame or not depth_frame:
                 continue
             color_bgr = rgb_frame_to_bgr(color_frame)
+            depth_mm, _sensor_scale = depth_frame_to_mm(depth_frame)
+            if color_bgr.shape[:2] != depth_mm.shape:
+                raise RuntimeError(
+                    f"硬件D2C对齐失败：RGB={color_bgr.shape[:2]}，Depth={depth_mm.shape}"
+                )
             if first_frame:
                 means = color_bgr.mean(axis=(0, 1))
                 print(
@@ -99,14 +129,28 @@ def main() -> int:
                     flush=True,
                 )
                 first_frame = False
-            ok, encoded = cv2.imencode(
+            rgb_ok, encoded_rgb = cv2.imencode(
                 ".jpg",
                 color_bgr,
                 [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality],
             )
-            if not ok:
+            if not rgb_ok:
                 raise RuntimeError("Orbbec RGB帧JPEG编码失败")
-            send_packet(connection, encoded.tobytes())
+            depth_ok, encoded_depth = cv2.imencode(
+                ".png", depth_mm, [cv2.IMWRITE_PNG_COMPRESSION, 1]
+            )
+            if not depth_ok:
+                raise RuntimeError("Orbbec深度帧PNG编码失败")
+            send_rgbd_packet(
+                connection,
+                RgbdPacket(
+                    rgb_jpeg=encoded_rgb.tobytes(),
+                    depth_png=encoded_depth.tobytes(),
+                    width=color_bgr.shape[1],
+                    height=color_bgr.shape[0],
+                    intrinsics=intrinsics,
+                ),
+            )
     except (BrokenPipeError, ConnectionResetError, EOFError):
         return 0
     except KeyboardInterrupt:

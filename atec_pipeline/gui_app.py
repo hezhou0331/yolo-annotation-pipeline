@@ -473,7 +473,7 @@ class AtecMainWindow(QMainWindow):
         self.live_model_label.setWordWrap(True)
         self.live_source_kind = QComboBox()
         self.live_source_kind.addItem("外接 HD Webcam（/dev/video0）", "opencv")
-        self.live_source_kind.addItem("Orbbec SDK RGB（与采集相机一致）", "orbbec")
+        self.live_source_kind.addItem("Orbbec SDK RGB-D（实例距离）", "orbbec")
         self.live_source_kind.currentIndexChanged.connect(self._refresh_live_source_controls)
         self.live_source = QLineEdit("0")
         self.live_source.setPlaceholderText("普通摄像头编号或视频文件路径")
@@ -559,7 +559,7 @@ class AtecMainWindow(QMainWindow):
         self.live_source.setEnabled(is_external_webcam)
         if hasattr(self, "live_start_button"):
             self.live_start_button.setText(
-                "启动外接摄像头实时识别" if is_external_webcam else "启动 Orbbec 实时识别"
+                "启动外接摄像头实时识别" if is_external_webcam else "启动 Orbbec RGB-D 实时识别"
             )
 
     def command_for_live(self) -> tuple[str, list[str]]:

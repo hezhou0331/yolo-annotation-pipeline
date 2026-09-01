@@ -57,7 +57,7 @@ App 保持“薄 App”：负责类别选择、场次管理、后台命令和日
 - 分段关键 Mask、SAM2 传播、YOLO 导出；
 - 完整场次级自动准备 `train/val`；
 - 严格验证、训练结果发现；
-- 使用真实 `best.pt` 启动外接 `/dev/video0` 或 Orbbec RGB 实时识别。
+- 使用真实 `best.pt` 启动普通 Webcam 或 Orbbec 对齐 RGB-D 实时识别，并显示实例距离。
 
 ## GitHub 使用手册（队友）
 
@@ -105,9 +105,9 @@ cd yolo-annotation-pipeline
 ./scripts/download_atec_data.sh --force
 ```
 
-查看当前数据 Release：
+当前快照包含 55 个正式场景、5,943 对 YOLO11-seg 图片/标签（train 5,070、val 873），九类标注全部纳入。查看当前数据 Release：
 
-[ATEC data snapshot 2026-08-26](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260826)
+[ATEC data snapshot 2026-09-01](https://github.com/hezhou0331/yolo-annotation-pipeline/releases/tag/data-20260901)
 
 ### 4. 配置 Python 环境
 
@@ -230,6 +230,10 @@ sand_bottle
 
 默认使用外接摄像头 `/dev/video0`。模型训练过哪些类别，就识别哪些类别，不是黄罐专用。
 
+需要深度时，在 App 的“实时数据源”中选择“Orbbec SDK RGB-D（实例距离）”。该模式
+使用硬件 Depth-to-Color 对齐，在每个 YOLO11-seg 实例旁显示 Mask 内有效深度中位数
+`Z`；普通 Webcam 没有深度信息。完整命令和可选 XYZ 显示见[项目命令](docs/zh-CN/项目命令.md)。
+
 ```text
 Q / Esc / Ctrl+C   退出实时识别
 ```
@@ -326,7 +330,7 @@ YOLO11-seg 数据集时，克隆公开仓库后直接运行：
 ./scripts/download_atec_data.sh
 ```
 
-脚本从公开 GitHub Release 下载 `data-20260826` 的数据分卷，自动合并并校验 SHA-256，然后恢复：
+脚本从公开 GitHub Release 下载 `data-20260901` 的四个数据分卷，自动合并并校验 SHA-256，然后恢复：
 
 ```text
 projects/atec_real/data/
@@ -334,7 +338,7 @@ projects/atec_real/datasets/
 ```
 
 为避免覆盖本地采集，已有非空数据目录时脚本会停止；确认需要合并时才使用
-`./scripts/download_atec_data.sh --force`。团队快照保留原始 RGB-D 图像和标注内容，只把影响跨机器使用的仓库绝对路径改为相对路径；本机原始数据不会被修改。
+`./scripts/download_atec_data.sh --force`。团队快照保留原始 RGB-D 图像、关键 Mask、传播结果、场景报告和完整正式数据集，只把影响跨机器使用的仓库绝对路径改为相对路径；本机原始数据不会被修改。快照排除未保存采集、导出暂存区、日志和缓存，不会把未完成标注混入训练集。
 
 ## 技术边界
 

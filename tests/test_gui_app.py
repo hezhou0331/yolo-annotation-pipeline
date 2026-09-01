@@ -514,7 +514,8 @@ def main() -> int:
         assert orbbec_index >= 0
         window.live_source_kind.setCurrentIndex(orbbec_index)
         assert not window.live_source.isEnabled(), "Orbbec SDK mode must not use a V4L2 source index"
-        assert "Orbbec" in window.live_start_button.text()
+        assert "RGB-D" in window.live_source_kind.currentText()
+        assert "Orbbec RGB-D" in window.live_start_button.text()
         orbbec_program, orbbec_args = window.command_for_live()
         assert orbbec_program == live_program
         assert "live_yolo11_seg_orbbec.py" in orbbec_args[0]
